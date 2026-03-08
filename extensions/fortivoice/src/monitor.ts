@@ -55,6 +55,7 @@ const FORTIVOICE_ACTION_GUIDANCE =
   "When more caller input is required, ask follow-up questions using speak-only.";
 const FORTIVOICE_ACTION_GUIDANCE_ENABLED = false;
 const FORTIVOICE_COLLECT_ENABLED = false;
+const FORTIVOICE_ROUTER_PROVIDER = process.env.FORTIVOICE_ROUTER_PROVIDER?.trim() || "openai";
 const FORTIVOICE_ROUTER_MODEL = process.env.FORTIVOICE_ROUTER_MODEL?.trim() || "gpt-4o-mini";
 const FORTIVOICE_ROUTER_BASE_URL = process.env.FORTIVOICE_ROUTER_BASE_URL?.trim() || undefined;
 const WEATHER_FETCH_TIMEOUT_MS = 5_000;
@@ -245,6 +246,12 @@ function resolveRouterModel(account: ResolvedFortivoiceAccount): string {
   return account.config.routerModel?.trim() || FORTIVOICE_ROUTER_MODEL;
 }
 
+function resolveRouterProvider(account: ResolvedFortivoiceAccount): "openai" | "groq" {
+  const configured =
+    account.config.routerProvider?.trim().toLowerCase() || FORTIVOICE_ROUTER_PROVIDER;
+  return configured === "groq" ? "groq" : "openai";
+}
+
 function resolveRouterBaseUrl(account: ResolvedFortivoiceAccount): string | undefined {
   return account.config.routerBaseUrl?.trim() || FORTIVOICE_ROUTER_BASE_URL;
 }
@@ -383,6 +390,7 @@ async function buildVoiceActions(params: {
     text,
     manifest: voiceManifest,
     sessionState,
+    provider: resolveRouterProvider(account),
     model: resolveRouterModel(account),
     baseUrl: resolveRouterBaseUrl(account),
   });

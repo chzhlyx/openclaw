@@ -11,6 +11,8 @@ const ROUTER_TRUST_THRESHOLD = 0.9;
 const ROUTER_CLARIFY_THRESHOLD = 0.65;
 const ROUTER_TIMEOUT_MS = 4_500;
 
+type RouterProvider = "openai" | "groq";
+
 const RouterSlotUpdateSchema = z
   .object({
     name: z.string(),
@@ -62,19 +64,49 @@ function normalizeText(value: string): string {
   return value.normalize("NFKC").replace(/\s+/g, " ").trim();
 }
 
-function resolveModelId(model: string): string {
+function resolveModelId(provider: RouterProvider, model: string): string {
   const trimmed = model.trim();
   if (!trimmed) {
-    return "gpt-4o-mini";
+    return provider === "groq" ? "llama-3.1-8b-instant" : "gpt-4o-mini";
+  }
+  if (provider === "groq") {
+    return trimmed;
   }
   if (!trimmed.includes("/")) {
     return trimmed;
   }
-  const [provider, id] = trimmed.split("/", 2);
-  if (provider === "openai" && id) {
+  const [modelProvider, id] = trimmed.split("/", 2);
+  if ((modelProvider === "openai" || modelProvider === "groq") && id) {
     return id;
   }
-  throw new Error(`FortiVoice router currently supports OpenAI-compatible models only: ${trimmed}`);
+  throw new Error(
+    `FortiVoice router currently supports openai/ and groq/ model ids only: ${trimmed}`,
+  );
+}
+
+function resolveRouterBaseUrl(provider: RouterProvider, baseUrl?: string): string {
+  const trimmed = baseUrl?.trim();
+  if (trimmed) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  return provider === "groq" ? "https://api.groq.com/openai/v1" : "https://api.openai.com/v1";
+}
+
+function resolveRouterApiKey(provider: RouterProvider, apiKey?: string): string {
+  const configured = apiKey?.trim();
+  if (configured) {
+    return configured;
+  }
+  const fromEnv =
+    provider === "groq" ? process.env.GROQ_API_KEY?.trim() : process.env.OPENAI_API_KEY?.trim();
+  if (fromEnv) {
+    return fromEnv;
+  }
+  throw new Error(
+    provider === "groq"
+      ? "GROQ_API_KEY is required for the FortiVoice Groq router"
+      : "OPENAI_API_KEY is required for the FortiVoice OpenAI router",
+  );
 }
 
 function compactFaqId(id: string, index: number): string {
@@ -284,20 +316,18 @@ export function shouldEscalate(params: {
   return params.confidence < ROUTER_CLARIFY_THRESHOLD;
 }
 
-async function callOpenAiRouter(params: {
+async function callRouterApi(params: {
   text: string;
   manifest: VoiceSkillManifest[];
   sessionState: VoiceSessionSnapshot;
+  provider: RouterProvider;
   model: string;
   baseUrl?: string;
   apiKey?: string;
   fetchImpl?: typeof fetch;
 }): Promise<RouterResponsePayload> {
-  const apiKey = params.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY is required for the FortiVoice router");
-  }
-  const baseUrl = (params.baseUrl?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
+  const apiKey = resolveRouterApiKey(params.provider, params.apiKey);
+  const baseUrl = resolveRouterBaseUrl(params.provider, params.baseUrl);
   const fetchImpl = params.fetchImpl ?? fetch;
   const response = await fetchImpl(`${baseUrl}/chat/completions`, {
     method: "POST",
@@ -306,7 +336,7 @@ async function callOpenAiRouter(params: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: resolveModelId(params.model),
+      model: resolveModelId(params.provider, params.model),
       temperature: 0,
       response_format: {
         type: "json_schema",
@@ -361,6 +391,7 @@ export async function routeVoiceTurn(params: {
   text: string;
   manifest: VoiceSkillManifest[];
   sessionState: VoiceSessionSnapshot;
+  provider?: RouterProvider;
   model?: string;
   baseUrl?: string;
   apiKey?: string;
@@ -376,11 +407,12 @@ export async function routeVoiceTurn(params: {
 
   let payload: RouterResponsePayload;
   try {
-    payload = await callOpenAiRouter({
+    payload = await callRouterApi({
       text,
       manifest: params.manifest,
       sessionState: params.sessionState,
-      model: params.model ?? "gpt-4o-mini",
+      provider: params.provider ?? "openai",
+      model: params.model ?? (params.provider === "groq" ? "llama-3.1-8b-instant" : "gpt-4o-mini"),
       baseUrl: params.baseUrl,
       apiKey: params.apiKey,
       fetchImpl: params.fetchImpl,

@@ -10,6 +10,20 @@ type ScoredFaqEntry = {
   score: number;
 };
 
+function sanitizeFaqAnswerText(value: string): string {
+  return value
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => Boolean(line) && line !== "---")
+    .join(" ")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/__(.*?)__/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function normalizeText(value: string): string {
   return value
     .normalize("NFKC")
@@ -78,12 +92,7 @@ export function compileFaqKnowledgeFromMarkdown(markdown: string): FaqKnowledgeE
       .filter((line) => line.startsWith("- "))
       .map((line) => line.slice(2).trim())
       .filter(Boolean);
-    const answer = (answerBlockMatch?.[1] ?? "")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .join(" ")
-      .trim();
+    const answer = sanitizeFaqAnswerText(answerBlockMatch?.[1] ?? "");
     if (!section.id || questionExamples.length === 0 || !answer) {
       continue;
     }

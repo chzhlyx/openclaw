@@ -231,4 +231,113 @@ describe("routeVoiceTurn", () => {
     expect(requestBody).not.toContain('"faqOptions"');
     expect(requestBody).not.toContain('"intentExamples"');
   });
+
+  it("uses the Groq-compatible base URL and GROQ_API_KEY when provider=groq", async () => {
+    const originalGroqApiKey = process.env.GROQ_API_KEY;
+    process.env.GROQ_API_KEY = "groq-test-key";
+
+    let requestedUrl = "";
+    let authorizationHeader = "";
+    let requestBody = "";
+    const fetchImpl = (async (url, init) => {
+      requestedUrl = String(url);
+      const headers = (init?.headers || {}) as Record<string, string>;
+      authorizationHeader = String(headers.Authorization || "");
+      requestBody = String(init?.body ?? "");
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  skill: "answer_faq",
+                  confidence: 0.99,
+                  slotUpdates: [],
+                  answerKey: "1",
+                  clarificationQuestion: "",
+                  notes: "faq match",
+                }),
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }) as typeof fetch;
+
+    try {
+      const decision = await routeVoiceTurn({
+        text: "What are your hours?",
+        manifest,
+        sessionState: { pendingSlots: {} },
+        provider: "groq",
+        fetchImpl,
+      });
+
+      expect(decision.decision).toBe("answer_now");
+      expect(requestedUrl).toBe("https://api.groq.com/openai/v1/chat/completions");
+      expect(authorizationHeader).toBe("Bearer groq-test-key");
+      expect(requestBody).toContain('"model":"llama-3.1-8b-instant"');
+    } finally {
+      if (typeof originalGroqApiKey === "string") {
+        process.env.GROQ_API_KEY = originalGroqApiKey;
+      } else {
+        delete process.env.GROQ_API_KEY;
+      }
+    }
+  });
+
+  it("preserves fully-qualified Groq model ids", async () => {
+    const originalGroqApiKey = process.env.GROQ_API_KEY;
+    process.env.GROQ_API_KEY = "groq-test-key";
+
+    let requestBody = "";
+    const fetchImpl = (async (_url, init) => {
+      requestBody = String(init?.body ?? "");
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  skill: "answer_faq",
+                  confidence: 0.99,
+                  slotUpdates: [],
+                  answerKey: "1",
+                  clarificationQuestion: "",
+                  notes: "faq match",
+                }),
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }) as typeof fetch;
+
+    try {
+      await routeVoiceTurn({
+        text: "What are your hours?",
+        manifest,
+        sessionState: { pendingSlots: {} },
+        provider: "groq",
+        model: "openai/gpt-oss-20b",
+        fetchImpl,
+      });
+
+      expect(requestBody).toContain('"model":"openai/gpt-oss-20b"');
+    } finally {
+      if (typeof originalGroqApiKey === "string") {
+        process.env.GROQ_API_KEY = originalGroqApiKey;
+      } else {
+        delete process.env.GROQ_API_KEY;
+      }
+    }
+  });
 });

@@ -14,6 +14,7 @@ const wsUrlSchema = z
   }, "FortiVoice URL must use ws:// or wss://");
 
 const phoneSchema = z.string().min(1, "FortiVoice phone must not be empty");
+const routerProviderSchema = z.enum(["openai", "groq"]);
 
 export const FortivoiceAccountConfigSchema = z.object({
   enabled: z.boolean().optional(),
@@ -22,6 +23,7 @@ export const FortivoiceAccountConfigSchema = z.object({
   url: wsUrlSchema.optional(),
   reconnectDelayMs: z.number().int().min(250).max(60_000).optional(),
   helloWorldOnStart: z.boolean().optional(),
+  routerProvider: routerProviderSchema.optional(),
   routerModel: z.string().min(1).optional(),
   routerBaseUrl: z.string().url().optional(),
   voiceSkillAllowlist: z.array(z.string().min(1)).optional(),
@@ -36,6 +38,7 @@ export const FortivoiceConfigSchema = z.object({
   url: wsUrlSchema.optional(),
   reconnectDelayMs: z.number().int().min(250).max(60_000).optional(),
   helloWorldOnStart: z.boolean().optional(),
+  routerProvider: routerProviderSchema.optional(),
   routerModel: z.string().min(1).optional(),
   routerBaseUrl: z.string().url().optional(),
   voiceSkillAllowlist: z.array(z.string().min(1)).optional(),
