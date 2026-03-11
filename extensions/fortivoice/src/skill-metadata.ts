@@ -16,6 +16,12 @@ import { compileFaqKnowledgeFromMarkdown, type FaqKnowledgeEntry } from "./faq-k
 const VoiceExecutionModeSchema = z.enum(["deterministic", "agentic"]);
 const VoiceEscalationPolicySchema = z.enum(["never", "on_low_confidence", "always"]);
 const VoiceAnswerModeSchema = z.enum(["knowledge", "template", "none"]);
+const VoiceSlotConstraintSchema = z
+  .object({
+    allowedValues: z.array(z.string().min(1)).optional().default([]),
+    reprompt: z.string().optional(),
+  })
+  .strict();
 
 const RawVoiceMetadataSchema = z
   .object({
@@ -25,6 +31,7 @@ const RawVoiceMetadataSchema = z
     optionalSlots: z.array(z.string().min(1)).optional().default([]),
     toolRequired: z.boolean().optional().default(false),
     missingSlotPrompts: z.record(z.string(), z.string()).optional().default({}),
+    slotConstraints: z.record(z.string(), VoiceSlotConstraintSchema).optional().default({}),
     waitPrompt: z.string().optional(),
     failurePrompt: z.string().optional(),
     executionMode: VoiceExecutionModeSchema.optional().default("deterministic"),
@@ -41,6 +48,8 @@ export type VoiceAnswerData = {
   faqEntries?: FaqKnowledgeEntry[];
 };
 
+export type VoiceSlotConstraint = z.infer<typeof VoiceSlotConstraintSchema>;
+
 export type VoiceSkillManifest = {
   skillName: string;
   skillPath: string;
@@ -49,6 +58,7 @@ export type VoiceSkillManifest = {
   optionalSlots: string[];
   toolRequired: boolean;
   missingSlotPrompts: Record<string, string>;
+  slotConstraints: Record<string, VoiceSlotConstraint>;
   waitPrompt?: string;
   failurePrompt?: string;
   executionMode: VoiceExecutionMode;
@@ -157,6 +167,15 @@ export function compileVoiceSkillManifest(params: {
       toolRequired: voice.toolRequired,
       missingSlotPrompts: Object.fromEntries(
         Object.entries(voice.missingSlotPrompts).map(([key, value]) => [key.trim(), value.trim()]),
+      ),
+      slotConstraints: Object.fromEntries(
+        Object.entries(voice.slotConstraints).map(([key, value]) => [
+          key.trim(),
+          {
+            allowedValues: value.allowedValues.map((entry) => entry.trim()).filter(Boolean),
+            reprompt: value.reprompt?.trim() || undefined,
+          },
+        ]),
       ),
       waitPrompt: voice.waitPrompt?.trim() || undefined,
       failurePrompt: voice.failurePrompt?.trim() || undefined,

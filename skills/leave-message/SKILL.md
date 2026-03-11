@@ -14,6 +14,9 @@ metadata:
             "enabled": true,
             "intentExamples":
               [
+                "can i leave a message",
+                "i want to leave a message",
+                "i want to leave a voicemail",
                 "i want to leave a message for sales",
                 "can you ask service to call me back",
                 "i need sales to contact me",
@@ -27,6 +30,14 @@ metadata:
                 "caller_name": "What is your name?",
                 "message": "What message would you like me to pass along?",
                 "contact": "What is the best phone number or email for a callback?",
+              },
+            "slotConstraints":
+              {
+                "department":
+                  {
+                    "allowedValues": ["sales", "service"],
+                    "reprompt": "Should I send this to Sales or Service?",
+                  },
               },
             "waitPrompt": "One moment while I take that message.",
             "executionMode": "agentic",
@@ -89,6 +100,9 @@ Do not route to any other address in this skill.
 
 ## Intent Examples
 
+- "Can I leave a message?"
+- "I want to leave a message."
+- "I want to leave a voicemail."
 - "I want to leave a message for sales."
 - "Can you ask service to call me back?"
 - "Please leave this message for your service team."

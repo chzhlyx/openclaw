@@ -3,6 +3,7 @@ import {
   buildFortivoiceAgentHandoffInput,
   buildVoiceFailureFallback,
   inferFortivoiceCollectActionFromPlainReply,
+  shouldEmitWaitPrompt,
 } from "./monitor.js";
 
 describe("fortivoice monitor", () => {
@@ -76,6 +77,7 @@ describe("fortivoice monitor", () => {
         optionalSlots: [],
         toolRequired: true,
         missingSlotPrompts: { city: "What city should I check?" },
+        slotConstraints: {},
         waitPrompt: "One moment while I check that.",
         failurePrompt: "I couldn't retrieve the weather right now. Please try again.",
         executionMode: "agentic",
@@ -92,5 +94,69 @@ describe("fortivoice monitor", () => {
         barge_in: true,
       },
     ]);
+  });
+
+  it("does not emit the wait prompt when fallback still has missing slots", () => {
+    expect(
+      shouldEmitWaitPrompt({
+        decision: {
+          decision: "fallback_agent",
+          skill: "leave_message",
+          confidence: 0.6,
+          slots: {},
+          missingSlots: ["department", "message"],
+          toolRequired: true,
+          executionMode: "agentic",
+          escalationPolicy: "always",
+          reason: "low_confidence",
+        },
+        skill: {
+          skillName: "leave_message",
+          skillPath: "/tmp/leave-message/SKILL.md",
+          intentExamples: [],
+          requiredSlots: ["department", "caller_name", "message", "contact"],
+          optionalSlots: [],
+          toolRequired: true,
+          missingSlotPrompts: { department: "Should I send this to Sales or Service?" },
+          slotConstraints: {},
+          waitPrompt: "One moment while I take that message.",
+          executionMode: "agentic",
+          escalationPolicy: "always",
+          answerMode: "none",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("emits the wait prompt when execution is ready", () => {
+    expect(
+      shouldEmitWaitPrompt({
+        decision: {
+          decision: "wait_and_execute",
+          skill: "weather",
+          confidence: 0.95,
+          slots: { city: "Ottawa" },
+          missingSlots: [],
+          toolRequired: true,
+          executionMode: "agentic",
+          escalationPolicy: "on_low_confidence",
+          reason: "ready",
+        },
+        skill: {
+          skillName: "weather",
+          skillPath: "/tmp/weather/SKILL.md",
+          intentExamples: [],
+          requiredSlots: ["city"],
+          optionalSlots: [],
+          toolRequired: true,
+          missingSlotPrompts: { city: "What city should I check?" },
+          slotConstraints: {},
+          waitPrompt: "One moment while I check that.",
+          executionMode: "agentic",
+          escalationPolicy: "on_low_confidence",
+          answerMode: "none",
+        },
+      }),
+    ).toBe(true);
   });
 });

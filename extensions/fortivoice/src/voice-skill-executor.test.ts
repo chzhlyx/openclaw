@@ -12,6 +12,7 @@ describe("voice skill executor", () => {
       optionalSlots: [],
       toolRequired: false,
       missingSlotPrompts: {},
+      slotConstraints: {},
       executionMode: "deterministic",
       escalationPolicy: "on_low_confidence",
       answerMode: "knowledge",

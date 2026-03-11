@@ -12,11 +12,23 @@ const ROUTER_CLARIFY_THRESHOLD = 0.65;
 const ROUTER_TIMEOUT_MS = 4_500;
 
 type RouterProvider = "openai" | "groq";
+type JsonSchemaProperty = Record<string, unknown>;
 
 const RouterSlotUpdateSchema = z
   .object({
     name: z.string(),
     value: z.string(),
+  })
+  .strict();
+
+const SlotTurnTypeSchema = z.enum(["slot_answer", "clear_interrupt", "unclear"]);
+
+const SlotTurnPayloadSchema = z
+  .object({
+    turnType: SlotTurnTypeSchema,
+    confidence: z.number().min(0).max(1),
+    slotUpdates: z.array(RouterSlotUpdateSchema).optional().default([]),
+    reason: z.string().optional().default(""),
   })
   .strict();
 
@@ -46,6 +58,14 @@ export type VoiceRouteDecision = {
 };
 
 type RouterResponsePayload = z.infer<typeof RouterPayloadSchema>;
+type SlotTurnResponsePayload = z.infer<typeof SlotTurnPayloadSchema>;
+
+export type SlotTurnDecision = {
+  turnType: "slot_answer" | "clear_interrupt" | "unclear";
+  confidence: number;
+  slots: Record<string, string>;
+  reason?: string;
+};
 
 type CompactVoiceSkill = {
   n: string;
@@ -239,6 +259,50 @@ function buildRouterJsonSchema() {
   };
 }
 
+function buildSlotTurnJsonSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      turnType: { type: "string", enum: ["slot_answer", "clear_interrupt", "unclear"] },
+      confidence: { type: "number", minimum: 0, maximum: 1 },
+      slotUpdates: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            name: { type: "string" },
+            value: { type: "string" },
+          },
+          required: ["name", "value"],
+        },
+      },
+      reason: { type: "string" },
+    },
+    required: ["turnType", "confidence", "slotUpdates", "reason"],
+  };
+}
+
+function buildSlotTurnPrompt(params: {
+  callerReply: string;
+  skill: VoiceSkillManifest;
+  activeSlot: string;
+  activeSlotPrompt?: string;
+  sessionState: VoiceSessionSnapshot;
+}): string {
+  const constraint = params.skill.slotConstraints[params.activeSlot];
+  return JSON.stringify({
+    caller_reply: params.callerReply,
+    pending_skill: params.skill.skillName,
+    expected_slot: params.activeSlot,
+    previous_system_prompt:
+      params.activeSlotPrompt?.trim() || params.skill.missingSlotPrompts[params.activeSlot] || "",
+    allowed_values: constraint?.allowedValues ?? [],
+    current_slots: params.sessionState.pendingSlots,
+  });
+}
+
 function parseRouterContent(content: string): RouterResponsePayload {
   const parsedJson = JSON.parse(content);
   const parsed = RouterPayloadSchema.safeParse(parsedJson);
@@ -285,6 +349,19 @@ function parseRouterContent(content: string): RouterResponsePayload {
   );
 }
 
+function parseSlotTurnContent(content: string): SlotTurnResponsePayload {
+  const parsedJson = JSON.parse(content);
+  const parsed = SlotTurnPayloadSchema.safeParse(parsedJson);
+  if (parsed.success) {
+    return parsed.data;
+  }
+  throw new Error(
+    `slot classifier returned invalid JSON payload: ${parsed.error.issues
+      .map((issue) => issue.path.join(".") || issue.message)
+      .join(", ")}`,
+  );
+}
+
 function missingRequiredSlots(skill: VoiceSkillManifest, slots: Record<string, string>): string[] {
   return skill.requiredSlots.filter((slotName) => !normalizeText(slots[slotName] ?? ""));
 }
@@ -317,15 +394,17 @@ export function shouldEscalate(params: {
 }
 
 async function callRouterApi(params: {
-  text: string;
-  manifest: VoiceSkillManifest[];
-  sessionState: VoiceSessionSnapshot;
+  systemPrompt: string;
+  prompt: string;
+  schemaName: string;
+  schema: JsonSchemaProperty;
+  parser: (content: string) => RouterResponsePayload | SlotTurnResponsePayload;
   provider: RouterProvider;
   model: string;
   baseUrl?: string;
   apiKey?: string;
   fetchImpl?: typeof fetch;
-}): Promise<RouterResponsePayload> {
+}): Promise<RouterResponsePayload | SlotTurnResponsePayload> {
   const apiKey = resolveRouterApiKey(params.provider, params.apiKey);
   const baseUrl = resolveRouterBaseUrl(params.provider, params.baseUrl);
   const fetchImpl = params.fetchImpl ?? fetch;
@@ -341,29 +420,19 @@ async function callRouterApi(params: {
       response_format: {
         type: "json_schema",
         json_schema: {
-          name: "fortivoice_route",
+          name: params.schemaName,
           strict: true,
-          schema: buildRouterJsonSchema(),
+          schema: params.schema,
         },
       },
       messages: [
         {
           role: "system",
-          content:
-            "Route telephony requests to skills using only the provided compact metadata. " +
-            "Return strict JSON matching the schema. " +
-            "Input JSON keys: u=utterance, s=session state, k=skills. " +
-            "Session keys: p=pending skill, l=last selected skill, o=collected slots. " +
-            "Skill keys: n=name, t=toolRequired(1=true), e=execution mode, r=required slots, x=intent examples, m=missing-slot prompts, f=faq options. " +
-            "FAQ option keys: i=short faq id, q=question examples. " +
-            "Prefer the pending skill when the caller is answering a previous slot question. " +
-            "If the selected skill is answer_faq, set answerKey to the short FAQ id from i. " +
-            "If the request is ambiguous but narrow, provide a short clarificationQuestion. " +
-            "Do not answer the caller directly.",
+          content: params.systemPrompt,
         },
         {
           role: "user",
-          content: buildRouterPrompt(params),
+          content: params.prompt,
         },
       ],
     }),
@@ -384,7 +453,109 @@ async function callRouterApi(params: {
     choices?: Array<{ message?: { content?: string | null } }>;
   };
   const content = payload.choices?.[0]?.message?.content ?? "";
-  return parseRouterContent(content);
+  return params.parser(content);
+}
+
+async function callSkillRouterApi(params: {
+  text: string;
+  manifest: VoiceSkillManifest[];
+  sessionState: VoiceSessionSnapshot;
+  provider: RouterProvider;
+  model: string;
+  baseUrl?: string;
+  apiKey?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<RouterResponsePayload> {
+  return (await callRouterApi({
+    systemPrompt:
+      "Route telephony requests to skills using only the provided compact metadata. " +
+      "Return strict JSON matching the schema. " +
+      "Input JSON keys: u=utterance, s=session state, k=skills. " +
+      "Session keys: p=pending skill, l=last selected skill, o=collected slots. " +
+      "Skill keys: n=name, t=toolRequired(1=true), e=execution mode, r=required slots, x=intent examples, m=missing-slot prompts, f=faq options. " +
+      "FAQ option keys: i=short faq id, q=question examples. " +
+      "Prefer the pending skill when the caller is answering a previous slot question. " +
+      "If the selected skill is answer_faq, set answerKey to the short FAQ id from i. " +
+      "If the request is ambiguous but narrow, provide a short clarificationQuestion. " +
+      "Do not answer the caller directly.",
+    prompt: buildRouterPrompt(params),
+    schemaName: "fortivoice_route",
+    schema: buildRouterJsonSchema(),
+    parser: parseRouterContent,
+    provider: params.provider,
+    model: params.model,
+    baseUrl: params.baseUrl,
+    apiKey: params.apiKey,
+    fetchImpl: params.fetchImpl,
+  })) as RouterResponsePayload;
+}
+
+export async function classifySlotTurn(params: {
+  text: string;
+  skill: VoiceSkillManifest;
+  activeSlot: string;
+  activeSlotPrompt?: string;
+  sessionState: VoiceSessionSnapshot;
+  provider?: RouterProvider;
+  model?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<SlotTurnDecision> {
+  const text = normalizeText(params.text);
+  const activeSlot = normalizeText(params.activeSlot);
+  if (!text || !activeSlot) {
+    return {
+      turnType: "unclear",
+      confidence: 0,
+      slots: {},
+      reason: "empty_slot_turn",
+    };
+  }
+
+  const payload = (await callRouterApi({
+    systemPrompt:
+      "Classify only caller_reply while a voice skill is collecting one slot. " +
+      "Return strict JSON matching the schema. " +
+      "The field previous_system_prompt is only prior assistant context. Never classify previous_system_prompt as caller speech. " +
+      "If caller_reply clearly answers expected_slot, return turnType=slot_answer and provide slotUpdates. " +
+      "If caller_reply clearly starts a different request or topic, return turnType=clear_interrupt. " +
+      "If caller_reply is short, noisy, partial, weak, or does not clearly answer expected_slot, return turnType=unclear. " +
+      "When allowed_values are provided, map caller_reply to one of them when the match is clear, including short natural phrases like 'to sales', 'for service', or 'sales please'. " +
+      "Do not guess from weak evidence. Prefer unclear over guessing. " +
+      "Examples: caller_reply='sales' -> slot_answer department=sales. " +
+      "caller_reply='to sales' -> slot_answer department=sales. " +
+      "caller_reply='for service please' -> slot_answer department=service. " +
+      "caller_reply='actually what are your business hours' -> clear_interrupt. " +
+      "caller_reply='huh' -> unclear.",
+    prompt: buildSlotTurnPrompt({
+      callerReply: text,
+      skill: params.skill,
+      activeSlot,
+      activeSlotPrompt: params.activeSlotPrompt,
+      sessionState: params.sessionState,
+    }),
+    schemaName: "fortivoice_slot_turn",
+    schema: buildSlotTurnJsonSchema(),
+    parser: parseSlotTurnContent,
+    provider: params.provider ?? "openai",
+    model: params.model ?? (params.provider === "groq" ? "llama-3.1-8b-instant" : "gpt-4o-mini"),
+    baseUrl: params.baseUrl,
+    apiKey: params.apiKey,
+    fetchImpl: params.fetchImpl,
+  })) as SlotTurnResponsePayload;
+
+  const slots = Object.fromEntries(
+    payload.slotUpdates
+      .map((update) => [normalizeText(update.name), normalizeText(update.value)] as const)
+      .filter(([name, value]) => Boolean(name) && Boolean(value)),
+  );
+  return {
+    turnType: payload.turnType,
+    confidence: payload.confidence,
+    slots,
+    reason: payload.reason.trim() || undefined,
+  };
 }
 
 export async function routeVoiceTurn(params: {
@@ -407,7 +578,7 @@ export async function routeVoiceTurn(params: {
 
   let payload: RouterResponsePayload;
   try {
-    payload = await callRouterApi({
+    payload = await callSkillRouterApi({
       text,
       manifest: params.manifest,
       sessionState: params.sessionState,

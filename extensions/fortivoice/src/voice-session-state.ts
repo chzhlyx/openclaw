@@ -4,6 +4,9 @@ export type VoiceSessionSnapshot = {
   activeTurnId?: string;
   pendingSkill?: string;
   lastSelectedSkill?: string;
+  activeSlot?: string;
+  activeSlotPrompt?: string;
+  slotMode?: "collecting" | "idle";
   pendingSlots: Record<string, string>;
   waitPromptSentForTurn?: string;
 };
@@ -23,6 +26,9 @@ function cloneSnapshot(state?: VoiceSessionState): VoiceSessionSnapshot {
     activeTurnId: state?.activeTurnId,
     pendingSkill: state?.pendingSkill,
     lastSelectedSkill: state?.lastSelectedSkill,
+    activeSlot: state?.activeSlot,
+    activeSlotPrompt: state?.activeSlotPrompt,
+    slotMode: state?.slotMode,
     pendingSlots: { ...(state?.pendingSlots ?? {}) },
     waitPromptSentForTurn: state?.waitPromptSentForTurn,
   };
@@ -45,6 +51,9 @@ export function startVoiceTurn(params: {
     activeTurnId: randomUUID(),
     pendingSkill: existing?.pendingSkill,
     lastSelectedSkill: existing?.lastSelectedSkill,
+    activeSlot: existing?.activeSlot,
+    activeSlotPrompt: existing?.activeSlotPrompt,
+    slotMode: existing?.slotMode,
     pendingSlots: { ...(existing?.pendingSlots ?? {}) },
     waitPromptSentForTurn: undefined,
     updatedAt: Date.now(),
@@ -70,6 +79,9 @@ export function updateVoiceSessionState(
     lastSelectedSkill: has("lastSelectedSkill")
       ? patch.lastSelectedSkill
       : existing?.lastSelectedSkill,
+    activeSlot: has("activeSlot") ? patch.activeSlot : existing?.activeSlot,
+    activeSlotPrompt: has("activeSlotPrompt") ? patch.activeSlotPrompt : existing?.activeSlotPrompt,
+    slotMode: has("slotMode") ? patch.slotMode : existing?.slotMode,
     pendingSlots: patch.pendingSlots
       ? { ...patch.pendingSlots }
       : { ...(existing?.pendingSlots ?? {}) },
@@ -108,6 +120,9 @@ export function clearVoiceSessionPendingState(params: {
 }): VoiceSessionSnapshot {
   return updateVoiceSessionState(params, {
     pendingSkill: undefined,
+    activeSlot: undefined,
+    activeSlotPrompt: undefined,
+    slotMode: "idle",
     pendingSlots: {},
     waitPromptSentForTurn: undefined,
   });

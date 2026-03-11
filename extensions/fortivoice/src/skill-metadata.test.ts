@@ -108,6 +108,14 @@ metadata:
             "optionalSlots": [],
             "toolRequired": false,
             "missingSlotPrompts": {},
+            "slotConstraints":
+              {
+                "department":
+                  {
+                    "allowedValues": ["sales", "service"],
+                    "reprompt": "Should I send this to Sales or Service?",
+                  },
+              },
             "failurePrompt": "I couldn't complete that request.",
             "executionMode": "deterministic",
             "escalationPolicy": "on_low_confidence",
@@ -142,6 +150,10 @@ metadata:
       "what are your business hours",
     ]);
     expect(manifest[0]?.failurePrompt).toBe("I couldn't complete that request.");
+    expect(manifest[0]?.slotConstraints.department?.allowedValues).toEqual(["sales", "service"]);
+    expect(manifest[0]?.slotConstraints.department?.reprompt).toBe(
+      "Should I send this to Sales or Service?",
+    );
     expect(manifest[0]?.answerData?.faqEntries?.[0]?.answer).toBe(
       "326 Moodie Drive, Ottawa, Ontario, Canada.",
     );

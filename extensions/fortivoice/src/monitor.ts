@@ -8,6 +8,7 @@ import {
 } from "openclaw/plugin-sdk";
 import WebSocket from "ws";
 import type { CoreConfig, ResolvedFortivoiceAccount } from "./types.js";
+import type { VoiceRouteDecision } from "./voice-router.js";
 import {
   createFortivoiceEvent,
   createFortivoiceRequest,
@@ -33,7 +34,7 @@ import {
   endFortivoiceSession,
   trackFortivoiceSession,
 } from "./state.js";
-import { routeVoiceTurn } from "./voice-router.js";
+import { classifySlotTurn, routeVoiceTurn } from "./voice-router.js";
 import {
   clearVoiceSessionPendingState,
   endVoiceSession,
@@ -260,6 +261,10 @@ function resolveVoicePrompt(skill: VoiceSkillManifest, slotName: string): string
   return skill.missingSlotPrompts[slotName] || "Could you share the missing detail?";
 }
 
+function missingSlotsForSkill(skill: VoiceSkillManifest, slots: Record<string, string>): string[] {
+  return skill.requiredSlots.filter((slotName) => !String(slots[slotName] ?? "").trim());
+}
+
 export function buildFortivoiceAgentHandoffInput(params: {
   latestUserText: string;
   activeSkill?: string;
@@ -314,6 +319,23 @@ export function buildVoiceFailureFallback(params: {
     requestId: params.requestId,
     text,
   });
+}
+
+export function shouldEmitWaitPrompt(params: {
+  decision: VoiceRouteDecision;
+  skill?: VoiceSkillManifest;
+}): boolean {
+  const { decision, skill } = params;
+  if (!skill?.toolRequired || !skill.waitPrompt) {
+    return false;
+  }
+  if (decision.decision === "wait_and_execute") {
+    return true;
+  }
+  if (decision.decision !== "fallback_agent") {
+    return false;
+  }
+  return decision.missingSlots.length === 0;
 }
 
 function recordImmediateOutboundActivity(params: {
@@ -382,6 +404,65 @@ async function buildVoiceActions(params: {
     accountId: account.accountId,
     sessionId,
   });
+  const completeVoiceSkillTurn = async (
+    selectedSkill: VoiceSkillManifest,
+    latestText: string,
+    options?: { emitWaitPrompt?: boolean },
+  ): Promise<FortivoiceAction[]> => {
+    updateVoiceSessionState(
+      { accountId: account.accountId, sessionId },
+      {
+        pendingSkill: selectedSkill.skillName,
+        lastSelectedSkill: selectedSkill.skillName,
+        activeSlot: undefined,
+        activeSlotPrompt: undefined,
+        slotMode: "idle",
+      },
+    );
+    if (options?.emitWaitPrompt) {
+      await emitWaitPromptIfNeeded(selectedSkill);
+    }
+
+    const handoffSnapshot = getVoiceSessionSnapshot({
+      accountId: account.accountId,
+      sessionId,
+    });
+    const fallbackActions = await buildAgentActions({
+      request,
+      account,
+      sessionId,
+      text: latestText,
+      agentInputText: buildFortivoiceAgentHandoffInput({
+        latestUserText: latestText,
+        activeSkill: handoffSnapshot.pendingSkill ?? selectedSkill.skillName,
+        collectedSlots: handoffSnapshot.pendingSlots,
+      }),
+      cfg,
+      runtime,
+      statusSink,
+    });
+
+    if (fallbackActions.length > 0) {
+      return fallbackActions;
+    }
+
+    if (selectedSkill.toolRequired) {
+      clearVoiceSessionPendingState({
+        accountId: account.accountId,
+        sessionId,
+      });
+      recordImmediateOutboundActivity({
+        accountId: account.accountId,
+        statusSink,
+      });
+      return buildVoiceFailureFallback({
+        requestId: request.req_id,
+        skill: selectedSkill,
+      });
+    }
+
+    return fallbackActions;
+  };
   const emitWaitPromptIfNeeded = async (skill?: VoiceSkillManifest) => {
     if (
       !skill?.toolRequired ||
@@ -415,6 +496,90 @@ async function buildVoiceActions(params: {
       logger.warn(`fortivoice wait prompt event failed: ${formatError(error)}`);
     }
   };
+  const pendingSkill = findManifestSkill(voiceManifest, sessionState.pendingSkill);
+  if (sessionState.slotMode === "collecting" && pendingSkill && sessionState.activeSlot) {
+    const slotDecision = await classifySlotTurn({
+      text,
+      skill: pendingSkill,
+      activeSlot: sessionState.activeSlot,
+      activeSlotPrompt: sessionState.activeSlotPrompt,
+      sessionState,
+      provider: resolveRouterProvider(account),
+      model: resolveRouterModel(account),
+      baseUrl: resolveRouterBaseUrl(account),
+    });
+
+    logger.info(
+      `fortivoice slot turn decision: session=${sessionId} skill=${pendingSkill.skillName} slot=${sessionState.activeSlot} turn=${slotDecision.turnType} confidence=${slotDecision.confidence.toFixed(
+        2,
+      )} reason=${slotDecision.reason ?? "-"}`,
+    );
+
+    if (slotDecision.turnType === "slot_answer" && Object.keys(slotDecision.slots).length > 0) {
+      const mergedSnapshot = mergeVoiceSessionSlots(
+        {
+          accountId: account.accountId,
+          sessionId,
+        },
+        slotDecision.slots,
+      );
+      const missingSlots = missingSlotsForSkill(pendingSkill, mergedSnapshot.pendingSlots);
+      if (missingSlots.length > 0) {
+        const nextSlot = missingSlots[0] ?? "";
+        updateVoiceSessionState(
+          { accountId: account.accountId, sessionId },
+          {
+            pendingSkill: pendingSkill.skillName,
+            lastSelectedSkill: pendingSkill.skillName,
+            activeSlot: nextSlot,
+            activeSlotPrompt: resolveVoicePrompt(pendingSkill, nextSlot),
+            slotMode: "collecting",
+          },
+        );
+        recordImmediateOutboundActivity({
+          accountId: account.accountId,
+          statusSink,
+        });
+        return buildSingleSpeakAction({
+          requestId: request.req_id,
+          text: resolveVoicePrompt(pendingSkill, nextSlot),
+        });
+      }
+      return completeVoiceSkillTurn(pendingSkill, text, {
+        emitWaitPrompt: pendingSkill.toolRequired,
+      });
+    }
+
+    if (slotDecision.turnType === "unclear") {
+      const reprompt =
+        pendingSkill.slotConstraints[sessionState.activeSlot]?.reprompt?.trim() ||
+        sessionState.activeSlotPrompt?.trim() ||
+        resolveVoicePrompt(pendingSkill, sessionState.activeSlot);
+      updateVoiceSessionState(
+        { accountId: account.accountId, sessionId },
+        {
+          pendingSkill: pendingSkill.skillName,
+          lastSelectedSkill: pendingSkill.skillName,
+          activeSlot: sessionState.activeSlot,
+          activeSlotPrompt: reprompt,
+          slotMode: "collecting",
+        },
+      );
+      recordImmediateOutboundActivity({
+        accountId: account.accountId,
+        statusSink,
+      });
+      return buildSingleSpeakAction({
+        requestId: request.req_id,
+        text: reprompt,
+      });
+    }
+
+    clearVoiceSessionPendingState({
+      accountId: account.accountId,
+      sessionId,
+    });
+  }
   const decision = await routeVoiceTurn({
     text,
     manifest: voiceManifest,
@@ -472,10 +637,14 @@ async function buildVoiceActions(params: {
   }
 
   if (decision.decision === "ask_slot" && selectedSkill && decision.missingSlots.length > 0) {
+    const nextSlot = decision.missingSlots[0] ?? "";
     updateVoiceSessionState(
       { accountId: account.accountId, sessionId },
       {
         pendingSkill: selectedSkill.skillName,
+        activeSlot: nextSlot,
+        activeSlotPrompt: resolveVoicePrompt(selectedSkill, nextSlot),
+        slotMode: "collecting",
       },
     );
     recordImmediateOutboundActivity({
@@ -484,7 +653,7 @@ async function buildVoiceActions(params: {
     });
     return buildSingleSpeakAction({
       requestId: request.req_id,
-      text: resolveVoicePrompt(selectedSkill, decision.missingSlots[0] ?? ""),
+      text: resolveVoicePrompt(selectedSkill, nextSlot),
     });
   }
 
@@ -499,61 +668,36 @@ async function buildVoiceActions(params: {
     });
   }
 
-  if (decision.decision === "wait_and_execute" && selectedSkill) {
-    await emitWaitPromptIfNeeded(selectedSkill);
-  }
-
   if (selectedSkill) {
     updateVoiceSessionState(
       { accountId: account.accountId, sessionId },
       {
         pendingSkill: selectedSkill.skillName,
+        activeSlot: undefined,
+        activeSlotPrompt: undefined,
+        slotMode: "idle",
       },
     );
   }
 
-  await emitWaitPromptIfNeeded(selectedSkill);
+  if (selectedSkill) {
+    return completeVoiceSkillTurn(selectedSkill, text, {
+      emitWaitPrompt: shouldEmitWaitPrompt({
+        decision,
+        skill: selectedSkill,
+      }),
+    });
+  }
 
-  const handoffSnapshot = getVoiceSessionSnapshot({
-    accountId: account.accountId,
-    sessionId,
-  });
-
-  const fallbackActions = await buildAgentActions({
+  return await buildAgentActions({
     request,
     account,
     sessionId,
     text,
-    agentInputText: buildFortivoiceAgentHandoffInput({
-      latestUserText: text,
-      activeSkill: handoffSnapshot.pendingSkill ?? selectedSkill?.skillName,
-      collectedSlots: handoffSnapshot.pendingSlots,
-    }),
     cfg,
     runtime,
     statusSink,
   });
-
-  if (fallbackActions.length > 0) {
-    return fallbackActions;
-  }
-
-  if (selectedSkill?.toolRequired) {
-    clearVoiceSessionPendingState({
-      accountId: account.accountId,
-      sessionId,
-    });
-    recordImmediateOutboundActivity({
-      accountId: account.accountId,
-      statusSink,
-    });
-    return buildVoiceFailureFallback({
-      requestId: request.req_id,
-      skill: selectedSkill,
-    });
-  }
-
-  return fallbackActions;
 }
 
 async function buildAgentActions(params: {

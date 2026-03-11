@@ -34,6 +34,7 @@ when_to_use: >
 
 do_not_use_when: >
   - Caller asks to speak to a person or department
+  - Caller wants to actively leave a message or request a callback
   - Caller wants to book, cancel, or reschedule an appointment
   - Caller reports an outage or incident
   - Caller is upset, emotional, or makes legal threats
@@ -125,7 +126,7 @@ AI-powered phone support is available 24 hours a day, 7 days a week.
 **Question examples**
 
 - What if I call after hours?
-- Can I leave a message?
+- Can I leave a voicemail after hours?
 - What happens if you’re closed?
 
 **Answer**

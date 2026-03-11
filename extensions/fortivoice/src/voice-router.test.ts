@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { VoiceSkillManifest } from "./skill-metadata.js";
-import { routeVoiceTurn } from "./voice-router.js";
+import { classifySlotTurn, routeVoiceTurn } from "./voice-router.js";
 
 const manifest: VoiceSkillManifest[] = [
   {
@@ -11,6 +11,7 @@ const manifest: VoiceSkillManifest[] = [
     optionalSlots: [],
     toolRequired: false,
     missingSlotPrompts: {},
+    slotConstraints: {},
     executionMode: "deterministic",
     escalationPolicy: "on_low_confidence",
     answerMode: "knowledge",
@@ -33,6 +34,7 @@ const manifest: VoiceSkillManifest[] = [
     optionalSlots: [],
     toolRequired: true,
     missingSlotPrompts: { city: "What city should I check?" },
+    slotConstraints: {},
     waitPrompt: "One moment while I check that.",
     executionMode: "deterministic",
     escalationPolicy: "on_low_confidence",
@@ -81,6 +83,173 @@ describe("routeVoiceTurn", () => {
     expect(decision.decision).toBe("answer_now");
     expect(decision.skill).toBe("answer_faq");
     expect(decision.answerKey).toBe("FAQ-001");
+  });
+
+  it("classifies a strong slot answer while collecting a slot", async () => {
+    const skill: VoiceSkillManifest = {
+      skillName: "leave_message",
+      skillPath: "/tmp/leave-message/SKILL.md",
+      intentExamples: ["can i leave a message", "i want to leave a message"],
+      requiredSlots: ["department", "caller_name", "message", "contact"],
+      optionalSlots: [],
+      toolRequired: true,
+      missingSlotPrompts: { department: "Should I send this to Sales or Service?" },
+      slotConstraints: {
+        department: {
+          allowedValues: ["sales", "service"],
+          reprompt: "Should I send this to Sales or Service?",
+        },
+      },
+      waitPrompt: "One moment while I take that message.",
+      executionMode: "agentic",
+      escalationPolicy: "always",
+      answerMode: "none",
+    };
+
+    const decision = await classifySlotTurn({
+      text: "sales",
+      skill,
+      activeSlot: "department",
+      activeSlotPrompt: "Should I send this to Sales or Service?",
+      sessionState: {
+        pendingSkill: "leave_message",
+        lastSelectedSkill: "leave_message",
+        activeSlot: "department",
+        activeSlotPrompt: "Should I send this to Sales or Service?",
+        slotMode: "collecting",
+        pendingSlots: {},
+      },
+      apiKey: "test-key",
+      fetchImpl: mockFetchWithPayload({
+        turnType: "slot_answer",
+        confidence: 0.98,
+        slotUpdates: [{ name: "department", value: "sales" }],
+        reason: "",
+      }),
+    });
+
+    expect(decision.turnType).toBe("slot_answer");
+    expect(decision.slots.department).toBe("sales");
+  });
+
+  it("classifies a weak slot reply as unclear", async () => {
+    const skill: VoiceSkillManifest = {
+      skillName: "leave_message",
+      skillPath: "/tmp/leave-message/SKILL.md",
+      intentExamples: ["can i leave a message", "i want to leave a message"],
+      requiredSlots: ["department", "caller_name", "message", "contact"],
+      optionalSlots: [],
+      toolRequired: true,
+      missingSlotPrompts: { department: "Should I send this to Sales or Service?" },
+      slotConstraints: {
+        department: {
+          allowedValues: ["sales", "service"],
+          reprompt: "Should I send this to Sales or Service?",
+        },
+      },
+      waitPrompt: "One moment while I take that message.",
+      executionMode: "agentic",
+      escalationPolicy: "always",
+      answerMode: "none",
+    };
+
+    const decision = await classifySlotTurn({
+      text: "Tels",
+      skill,
+      activeSlot: "department",
+      activeSlotPrompt: "Should I send this to Sales or Service?",
+      sessionState: {
+        pendingSkill: "leave_message",
+        lastSelectedSkill: "leave_message",
+        activeSlot: "department",
+        activeSlotPrompt: "Should I send this to Sales or Service?",
+        slotMode: "collecting",
+        pendingSlots: {},
+      },
+      apiKey: "test-key",
+      fetchImpl: mockFetchWithPayload({
+        turnType: "unclear",
+        confidence: 0.21,
+        slotUpdates: [],
+        reason: "weak reply",
+      }),
+    });
+
+    expect(decision.turnType).toBe("unclear");
+    expect(decision.slots).toEqual({});
+  });
+
+  it("sends an explicit slot-turn payload that distinguishes caller reply from prior prompt", async () => {
+    const skill: VoiceSkillManifest = {
+      skillName: "leave_message",
+      skillPath: "/tmp/leave-message/SKILL.md",
+      intentExamples: ["can i leave a message", "i want to leave a message"],
+      requiredSlots: ["department", "caller_name", "message", "contact"],
+      optionalSlots: [],
+      toolRequired: true,
+      missingSlotPrompts: { department: "Should I send this to Sales or Service?" },
+      slotConstraints: {
+        department: {
+          allowedValues: ["sales", "service"],
+          reprompt: "Should I send this to Sales or Service?",
+        },
+      },
+      waitPrompt: "One moment while I take that message.",
+      executionMode: "agentic",
+      escalationPolicy: "always",
+      answerMode: "none",
+    };
+
+    let requestBody = "";
+    const fetchImpl = (async (_url, init) => {
+      requestBody = String(init?.body ?? "");
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  turnType: "slot_answer",
+                  confidence: 0.98,
+                  slotUpdates: [{ name: "department", value: "sales" }],
+                  reason: "",
+                }),
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }) as typeof fetch;
+
+    await classifySlotTurn({
+      text: "to sales",
+      skill,
+      activeSlot: "department",
+      activeSlotPrompt: "Should I send this to Sales or Service?",
+      sessionState: {
+        pendingSkill: "leave_message",
+        lastSelectedSkill: "leave_message",
+        activeSlot: "department",
+        activeSlotPrompt: "Should I send this to Sales or Service?",
+        slotMode: "collecting",
+        pendingSlots: {},
+      },
+      apiKey: "test-key",
+      fetchImpl,
+    });
+
+    expect(requestBody).toContain('\\"caller_reply\\":\\"to sales\\"');
+    expect(requestBody).toContain('\\"expected_slot\\":\\"department\\"');
+    expect(requestBody).toContain(
+      '\\"previous_system_prompt\\":\\"Should I send this to Sales or Service?\\"',
+    );
+    expect(requestBody).toContain('\\"allowed_values\\":[\\"sales\\",\\"service\\"]');
+    expect(requestBody).not.toContain('\\"u\\":\\"to sales\\"');
+    expect(requestBody).not.toContain('\\"q\\":\\"Should I send this to Sales or Service?\\"');
   });
 
   it("maps compact FAQ ids back to the stored FAQ entry id", async () => {
