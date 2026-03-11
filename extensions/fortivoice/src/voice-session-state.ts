@@ -7,6 +7,7 @@ export type VoiceSessionSnapshot = {
   activeSlot?: string;
   activeSlotPrompt?: string;
   slotMode?: "collecting" | "idle";
+  awaitingConfirmation?: boolean;
   pendingSlots: Record<string, string>;
   waitPromptSentForTurn?: string;
 };
@@ -29,6 +30,7 @@ function cloneSnapshot(state?: VoiceSessionState): VoiceSessionSnapshot {
     activeSlot: state?.activeSlot,
     activeSlotPrompt: state?.activeSlotPrompt,
     slotMode: state?.slotMode,
+    awaitingConfirmation: state?.awaitingConfirmation,
     pendingSlots: { ...(state?.pendingSlots ?? {}) },
     waitPromptSentForTurn: state?.waitPromptSentForTurn,
   };
@@ -54,6 +56,7 @@ export function startVoiceTurn(params: {
     activeSlot: existing?.activeSlot,
     activeSlotPrompt: existing?.activeSlotPrompt,
     slotMode: existing?.slotMode,
+    awaitingConfirmation: existing?.awaitingConfirmation,
     pendingSlots: { ...(existing?.pendingSlots ?? {}) },
     waitPromptSentForTurn: undefined,
     updatedAt: Date.now(),
@@ -82,6 +85,9 @@ export function updateVoiceSessionState(
     activeSlot: has("activeSlot") ? patch.activeSlot : existing?.activeSlot,
     activeSlotPrompt: has("activeSlotPrompt") ? patch.activeSlotPrompt : existing?.activeSlotPrompt,
     slotMode: has("slotMode") ? patch.slotMode : existing?.slotMode,
+    awaitingConfirmation: has("awaitingConfirmation")
+      ? patch.awaitingConfirmation
+      : existing?.awaitingConfirmation,
     pendingSlots: patch.pendingSlots
       ? { ...patch.pendingSlots }
       : { ...(existing?.pendingSlots ?? {}) },
@@ -123,6 +129,7 @@ export function clearVoiceSessionPendingState(params: {
     activeSlot: undefined,
     activeSlotPrompt: undefined,
     slotMode: "idle",
+    awaitingConfirmation: false,
     pendingSlots: {},
     waitPromptSentForTurn: undefined,
   });

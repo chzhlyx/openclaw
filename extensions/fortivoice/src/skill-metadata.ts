@@ -23,6 +23,15 @@ const VoiceSlotConstraintSchema = z
   })
   .strict();
 
+const VoiceExecutionConfigSchema = z
+  .object({
+    kind: z.literal("department_email"),
+    requiresConfirmation: z.boolean().optional().default(true),
+    fromHeader: z.string().min(1),
+    routes: z.record(z.string(), z.string().min(1)),
+  })
+  .strict();
+
 const RawVoiceMetadataSchema = z
   .object({
     enabled: z.boolean(),
@@ -34,6 +43,7 @@ const RawVoiceMetadataSchema = z
     slotConstraints: z.record(z.string(), VoiceSlotConstraintSchema).optional().default({}),
     waitPrompt: z.string().optional(),
     failurePrompt: z.string().optional(),
+    execution: VoiceExecutionConfigSchema.optional(),
     executionMode: VoiceExecutionModeSchema.optional().default("deterministic"),
     escalationPolicy: VoiceEscalationPolicySchema.optional().default("on_low_confidence"),
     answerMode: VoiceAnswerModeSchema.optional().default("none"),
@@ -49,6 +59,7 @@ export type VoiceAnswerData = {
 };
 
 export type VoiceSlotConstraint = z.infer<typeof VoiceSlotConstraintSchema>;
+export type VoiceExecutionConfig = z.infer<typeof VoiceExecutionConfigSchema>;
 
 export type VoiceSkillManifest = {
   skillName: string;
@@ -61,6 +72,7 @@ export type VoiceSkillManifest = {
   slotConstraints: Record<string, VoiceSlotConstraint>;
   waitPrompt?: string;
   failurePrompt?: string;
+  execution?: VoiceExecutionConfig;
   executionMode: VoiceExecutionMode;
   escalationPolicy: VoiceEscalationPolicy;
   answerMode: VoiceAnswerMode;
@@ -179,6 +191,19 @@ export function compileVoiceSkillManifest(params: {
       ),
       waitPrompt: voice.waitPrompt?.trim() || undefined,
       failurePrompt: voice.failurePrompt?.trim() || undefined,
+      execution: voice.execution
+        ? {
+            kind: voice.execution.kind,
+            requiresConfirmation: voice.execution.requiresConfirmation,
+            fromHeader: voice.execution.fromHeader.trim(),
+            routes: Object.fromEntries(
+              Object.entries(voice.execution.routes).map(([key, value]) => [
+                key.trim().toLowerCase(),
+                value.trim(),
+              ]),
+            ),
+          }
+        : undefined,
       executionMode: voice.executionMode,
       escalationPolicy: voice.escalationPolicy,
       answerMode: voice.answerMode,

@@ -119,7 +119,7 @@ describe("fortivoice monitor", () => {
           toolRequired: true,
           missingSlotPrompts: { department: "Should I send this to Sales or Service?" },
           slotConstraints: {},
-          waitPrompt: "One moment while I take that message.",
+          waitPrompt: "One moment while I send that message.",
           executionMode: "agentic",
           escalationPolicy: "always",
           answerMode: "none",

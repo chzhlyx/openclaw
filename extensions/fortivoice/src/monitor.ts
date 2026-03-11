@@ -43,7 +43,13 @@ import {
   startVoiceTurn,
   updateVoiceSessionState,
 } from "./voice-session-state.js";
-import { resolveDeterministicVoiceAnswer } from "./voice-skill-executor.js";
+import {
+  buildVoiceExecutionConfirmationPrompt,
+  executeVoiceToolSkill,
+  hasExecutableVoiceAction,
+  interpretVoiceExecutionConfirmationReply,
+  resolveDeterministicVoiceAnswer,
+} from "./voice-skill-executor.js";
 
 const HELLO_WORLD_TEXT = "Hello, this is FortiVoice AI assistant, how can I help you";
 const FORTIVOICE_TEXT_LIMIT = 700;
@@ -404,6 +410,31 @@ async function buildVoiceActions(params: {
     accountId: account.accountId,
     sessionId,
   });
+  const completeDeterministicToolTurn = async (
+    selectedSkill: VoiceSkillManifest,
+  ): Promise<FortivoiceAction[]> => {
+    await emitWaitPromptIfNeeded(selectedSkill);
+    const executionSnapshot = getVoiceSessionSnapshot({
+      accountId: account.accountId,
+      sessionId,
+    });
+    const execution = await executeVoiceToolSkill({
+      skill: selectedSkill,
+      slots: executionSnapshot.pendingSlots,
+    });
+    clearVoiceSessionPendingState({
+      accountId: account.accountId,
+      sessionId,
+    });
+    recordImmediateOutboundActivity({
+      accountId: account.accountId,
+      statusSink,
+    });
+    return buildSingleSpeakAction({
+      requestId: request.req_id,
+      text: execution.speakText,
+    });
+  };
   const completeVoiceSkillTurn = async (
     selectedSkill: VoiceSkillManifest,
     latestText: string,
@@ -417,8 +448,12 @@ async function buildVoiceActions(params: {
         activeSlot: undefined,
         activeSlotPrompt: undefined,
         slotMode: "idle",
+        awaitingConfirmation: false,
       },
     );
+    if (hasExecutableVoiceAction(selectedSkill)) {
+      return completeDeterministicToolTurn(selectedSkill);
+    }
     if (options?.emitWaitPrompt) {
       await emitWaitPromptIfNeeded(selectedSkill);
     }
@@ -497,6 +532,45 @@ async function buildVoiceActions(params: {
     }
   };
   const pendingSkill = findManifestSkill(voiceManifest, sessionState.pendingSkill);
+  if (sessionState.awaitingConfirmation && pendingSkill && hasExecutableVoiceAction(pendingSkill)) {
+    const confirmation = interpretVoiceExecutionConfirmationReply(text);
+    if (confirmation === "confirm") {
+      return completeDeterministicToolTurn(pendingSkill);
+    }
+    if (confirmation === "cancel") {
+      updateVoiceSessionState(
+        { accountId: account.accountId, sessionId },
+        {
+          pendingSkill: pendingSkill.skillName,
+          lastSelectedSkill: pendingSkill.skillName,
+          activeSlot: undefined,
+          activeSlotPrompt: undefined,
+          slotMode: "idle",
+          awaitingConfirmation: false,
+        },
+      );
+      recordImmediateOutboundActivity({
+        accountId: account.accountId,
+        statusSink,
+      });
+      return buildSingleSpeakAction({
+        requestId: request.req_id,
+        text: "Okay. Tell me what you would like to change.",
+      });
+    }
+    const confirmationPrompt = buildVoiceExecutionConfirmationPrompt({
+      skill: pendingSkill,
+      slots: sessionState.pendingSlots,
+    });
+    recordImmediateOutboundActivity({
+      accountId: account.accountId,
+      statusSink,
+    });
+    return buildSingleSpeakAction({
+      requestId: request.req_id,
+      text: confirmationPrompt ?? "Please confirm if you want me to complete that request now.",
+    });
+  }
   if (sessionState.slotMode === "collecting" && pendingSkill && sessionState.activeSlot) {
     const slotDecision = await classifySlotTurn({
       text,
@@ -534,6 +608,7 @@ async function buildVoiceActions(params: {
             activeSlot: nextSlot,
             activeSlotPrompt: resolveVoicePrompt(pendingSkill, nextSlot),
             slotMode: "collecting",
+            awaitingConfirmation: false,
           },
         );
         recordImmediateOutboundActivity({
@@ -543,6 +618,31 @@ async function buildVoiceActions(params: {
         return buildSingleSpeakAction({
           requestId: request.req_id,
           text: resolveVoicePrompt(pendingSkill, nextSlot),
+        });
+      }
+      const confirmationPrompt = buildVoiceExecutionConfirmationPrompt({
+        skill: pendingSkill,
+        slots: mergedSnapshot.pendingSlots,
+      });
+      if (confirmationPrompt) {
+        updateVoiceSessionState(
+          { accountId: account.accountId, sessionId },
+          {
+            pendingSkill: pendingSkill.skillName,
+            lastSelectedSkill: pendingSkill.skillName,
+            activeSlot: undefined,
+            activeSlotPrompt: undefined,
+            slotMode: "idle",
+            awaitingConfirmation: true,
+          },
+        );
+        recordImmediateOutboundActivity({
+          accountId: account.accountId,
+          statusSink,
+        });
+        return buildSingleSpeakAction({
+          requestId: request.req_id,
+          text: confirmationPrompt,
         });
       }
       return completeVoiceSkillTurn(pendingSkill, text, {
@@ -563,6 +663,7 @@ async function buildVoiceActions(params: {
           activeSlot: sessionState.activeSlot,
           activeSlotPrompt: reprompt,
           slotMode: "collecting",
+          awaitingConfirmation: false,
         },
       );
       recordImmediateOutboundActivity({
@@ -645,6 +746,7 @@ async function buildVoiceActions(params: {
         activeSlot: nextSlot,
         activeSlotPrompt: resolveVoicePrompt(selectedSkill, nextSlot),
         slotMode: "collecting",
+        awaitingConfirmation: false,
       },
     );
     recordImmediateOutboundActivity({
@@ -676,11 +778,41 @@ async function buildVoiceActions(params: {
         activeSlot: undefined,
         activeSlotPrompt: undefined,
         slotMode: "idle",
+        awaitingConfirmation: false,
       },
     );
   }
 
   if (selectedSkill) {
+    const latestSnapshot = getVoiceSessionSnapshot({
+      accountId: account.accountId,
+      sessionId,
+    });
+    const confirmationPrompt = buildVoiceExecutionConfirmationPrompt({
+      skill: selectedSkill,
+      slots: latestSnapshot.pendingSlots,
+    });
+    if (confirmationPrompt) {
+      updateVoiceSessionState(
+        { accountId: account.accountId, sessionId },
+        {
+          pendingSkill: selectedSkill.skillName,
+          lastSelectedSkill: selectedSkill.skillName,
+          activeSlot: undefined,
+          activeSlotPrompt: undefined,
+          slotMode: "idle",
+          awaitingConfirmation: true,
+        },
+      );
+      recordImmediateOutboundActivity({
+        accountId: account.accountId,
+        statusSink,
+      });
+      return buildSingleSpeakAction({
+        requestId: request.req_id,
+        text: confirmationPrompt,
+      });
+    }
     return completeVoiceSkillTurn(selectedSkill, text, {
       emitWaitPrompt: shouldEmitWaitPrompt({
         decision,
