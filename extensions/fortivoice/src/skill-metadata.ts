@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
+import JSON5 from "json5";
 import fs from "node:fs";
 import { z } from "zod";
 import type { SkillEntry } from "../../../src/agents/skills/types.js";
@@ -25,6 +26,7 @@ const RawVoiceMetadataSchema = z
     toolRequired: z.boolean().optional().default(false),
     missingSlotPrompts: z.record(z.string(), z.string()).optional().default({}),
     waitPrompt: z.string().optional(),
+    failurePrompt: z.string().optional(),
     executionMode: VoiceExecutionModeSchema.optional().default("deterministic"),
     escalationPolicy: VoiceEscalationPolicySchema.optional().default("on_low_confidence"),
     answerMode: VoiceAnswerModeSchema.optional().default("none"),
@@ -48,6 +50,7 @@ export type VoiceSkillManifest = {
   toolRequired: boolean;
   missingSlotPrompts: Record<string, string>;
   waitPrompt?: string;
+  failurePrompt?: string;
   executionMode: VoiceExecutionMode;
   escalationPolicy: VoiceEscalationPolicy;
   answerMode: VoiceAnswerMode;
@@ -61,7 +64,7 @@ function parseVoiceMetadataFromEntry(entry: SkillEntry) {
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON5.parse(raw);
   } catch {
     return null;
   }
@@ -156,6 +159,7 @@ export function compileVoiceSkillManifest(params: {
         Object.entries(voice.missingSlotPrompts).map(([key, value]) => [key.trim(), value.trim()]),
       ),
       waitPrompt: voice.waitPrompt?.trim() || undefined,
+      failurePrompt: voice.failurePrompt?.trim() || undefined,
       executionMode: voice.executionMode,
       escalationPolicy: voice.escalationPolicy,
       answerMode: voice.answerMode,

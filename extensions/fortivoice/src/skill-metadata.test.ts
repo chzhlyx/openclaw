@@ -81,4 +81,69 @@ metadata: { "openclaw": { "voice": { "enabled": true, "intentExamples": [] } } }
     expect(skipped).toHaveLength(1);
     expect(skipped[0]).toContain("bad_voice");
   });
+
+  it("accepts multiline JSON5 voice metadata used in SKILL.md files", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "fortivoice-manifest-"));
+    tempDirs.push(workspaceDir);
+
+    await writeSkill({
+      workspaceDir,
+      dirName: "answer-faq",
+      body: `---
+name: answer_faq
+description: FAQ skill
+metadata:
+  {
+    "openclaw":
+      {
+        "voice":
+          {
+            "enabled": true,
+            "intentExamples":
+              [
+                "what is your office address",
+                "what are your business hours",
+              ],
+            "requiredSlots": [],
+            "optionalSlots": [],
+            "toolRequired": false,
+            "missingSlotPrompts": {},
+            "failurePrompt": "I couldn't complete that request.",
+            "executionMode": "deterministic",
+            "escalationPolicy": "on_low_confidence",
+            "answerMode": "knowledge",
+          },
+      },
+  }
+---
+
+# Approved FAQ Knowledge Base
+
+## FAQ-001 — Address
+
+**Question examples**
+
+- What is your office address?
+
+**Answer**
+326 Moodie Drive, Ottawa, Ontario, Canada.
+`,
+    });
+
+    const manifest = compileVoiceSkillManifest({
+      cfg: {},
+      workspaceDir,
+      skillAllowlist: ["answer_faq"],
+    });
+
+    expect(manifest.map((entry) => entry.skillName)).toEqual(["answer_faq"]);
+    expect(manifest[0]?.intentExamples).toEqual([
+      "what is your office address",
+      "what are your business hours",
+    ]);
+    expect(manifest[0]?.failurePrompt).toBe("I couldn't complete that request.");
+    expect(manifest[0]?.answerData?.faqEntries?.[0]?.answer).toBe(
+      "326 Moodie Drive, Ottawa, Ontario, Canada.",
+    );
+  });
 });

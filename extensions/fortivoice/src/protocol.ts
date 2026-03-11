@@ -344,6 +344,23 @@ export function createFortivoiceResponse(params: {
   };
 }
 
+export function createFortivoiceEvent(params: {
+  seq: number;
+  op: string;
+  sessionId?: string | null;
+  payload: Record<string, unknown>;
+}): FortivoiceEnvelope {
+  return {
+    v: 1,
+    type: "evt",
+    session_id: params.sessionId ?? null,
+    seq: params.seq,
+    ts: nowIsoTimestamp(),
+    op: params.op,
+    payload: params.payload,
+  };
+}
+
 export function fortivoiceOk(result: Record<string, unknown>): FortivoiceResponsePayload {
   return {
     ok: true,

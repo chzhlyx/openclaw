@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildFortivoiceAgentHandoffInput,
+  buildVoiceFailureFallback,
   inferFortivoiceCollectActionFromPlainReply,
 } from "./monitor.js";
 
@@ -62,5 +63,34 @@ describe("fortivoice monitor", () => {
     });
 
     expect(handoff).toBe("I need help");
+  });
+
+  it("uses the skill failure prompt when the fallback agent returns no actions", () => {
+    const actions = buildVoiceFailureFallback({
+      requestId: "req-1",
+      skill: {
+        skillName: "weather",
+        skillPath: "/tmp/weather/SKILL.md",
+        intentExamples: [],
+        requiredSlots: ["city"],
+        optionalSlots: [],
+        toolRequired: true,
+        missingSlotPrompts: { city: "What city should I check?" },
+        waitPrompt: "One moment while I check that.",
+        failurePrompt: "I couldn't retrieve the weather right now. Please try again.",
+        executionMode: "agentic",
+        escalationPolicy: "on_low_confidence",
+        answerMode: "none",
+      },
+    });
+
+    expect(actions).toEqual([
+      {
+        type: "speak",
+        message_id: "req-1-1",
+        text: "I couldn't retrieve the weather right now. Please try again.",
+        barge_in: true,
+      },
+    ]);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createFortivoiceEvent,
   createFortivoiceRequest,
   createFortivoiceResponse,
   fortivoiceError,
@@ -92,6 +93,28 @@ describe("fortivoice protocol", () => {
         client: {
           phone: "+14155550123",
         },
+      },
+    });
+  });
+
+  it("creates outbound session.actions event envelope", () => {
+    const event = createFortivoiceEvent({
+      seq: 9,
+      op: "session.actions",
+      sessionId: "session-1",
+      payload: {
+        actions: [{ type: "speak", message_id: "m1", text: "One moment while I check that." }],
+      },
+    });
+
+    expect(event).toMatchObject({
+      v: 1,
+      type: "evt",
+      session_id: "session-1",
+      seq: 9,
+      op: "session.actions",
+      payload: {
+        actions: [{ type: "speak", message_id: "m1", text: "One moment while I check that." }],
       },
     });
   });
