@@ -23,15 +23,6 @@ const VoiceSlotConstraintSchema = z
   })
   .strict();
 
-const VoiceExecutionConfigSchema = z
-  .object({
-    kind: z.literal("department_email"),
-    requiresConfirmation: z.boolean().optional().default(true),
-    fromHeader: z.string().min(1),
-    routes: z.record(z.string(), z.string().min(1)),
-  })
-  .strict();
-
 const RawVoiceMetadataSchema = z
   .object({
     enabled: z.boolean(),
@@ -43,7 +34,8 @@ const RawVoiceMetadataSchema = z
     slotConstraints: z.record(z.string(), VoiceSlotConstraintSchema).optional().default({}),
     waitPrompt: z.string().optional(),
     failurePrompt: z.string().optional(),
-    execution: VoiceExecutionConfigSchema.optional(),
+    allowedTools: z.array(z.string().min(1)).optional().default([]),
+    requiredTool: z.string().min(1).optional(),
     executionMode: VoiceExecutionModeSchema.optional().default("deterministic"),
     escalationPolicy: VoiceEscalationPolicySchema.optional().default("on_low_confidence"),
     answerMode: VoiceAnswerModeSchema.optional().default("none"),
@@ -59,11 +51,11 @@ export type VoiceAnswerData = {
 };
 
 export type VoiceSlotConstraint = z.infer<typeof VoiceSlotConstraintSchema>;
-export type VoiceExecutionConfig = z.infer<typeof VoiceExecutionConfigSchema>;
 
 export type VoiceSkillManifest = {
   skillName: string;
   skillPath: string;
+  skillInstructions: string;
   intentExamples: string[];
   requiredSlots: string[];
   optionalSlots: string[];
@@ -72,7 +64,8 @@ export type VoiceSkillManifest = {
   slotConstraints: Record<string, VoiceSlotConstraint>;
   waitPrompt?: string;
   failurePrompt?: string;
-  execution?: VoiceExecutionConfig;
+  allowedTools: string[];
+  requiredTool?: string;
   executionMode: VoiceExecutionMode;
   escalationPolicy: VoiceEscalationPolicy;
   answerMode: VoiceAnswerMode;
@@ -114,6 +107,10 @@ function compileAnswerData(params: {
   const markdown = fs.readFileSync(params.entry.skill.filePath, "utf8");
   const faqEntries = compileFaqKnowledgeFromMarkdown(markdown);
   return faqEntries.length > 0 ? { faqEntries } : undefined;
+}
+
+function loadSkillInstructions(entry: SkillEntry): string {
+  return fs.readFileSync(entry.skill.filePath, "utf8").trim();
 }
 
 function normalizeSkillAllowlist(allowlist?: string[]): Set<string> | null {
@@ -173,6 +170,7 @@ export function compileVoiceSkillManifest(params: {
     manifest.push({
       skillName: entry.skill.name,
       skillPath: entry.skill.filePath,
+      skillInstructions: loadSkillInstructions(entry),
       intentExamples: voice.intentExamples.map((value) => value.trim()).filter(Boolean),
       requiredSlots: voice.requiredSlots.map((value) => value.trim()).filter(Boolean),
       optionalSlots: voice.optionalSlots.map((value) => value.trim()).filter(Boolean),
@@ -191,19 +189,8 @@ export function compileVoiceSkillManifest(params: {
       ),
       waitPrompt: voice.waitPrompt?.trim() || undefined,
       failurePrompt: voice.failurePrompt?.trim() || undefined,
-      execution: voice.execution
-        ? {
-            kind: voice.execution.kind,
-            requiresConfirmation: voice.execution.requiresConfirmation,
-            fromHeader: voice.execution.fromHeader.trim(),
-            routes: Object.fromEntries(
-              Object.entries(voice.execution.routes).map(([key, value]) => [
-                key.trim().toLowerCase(),
-                value.trim(),
-              ]),
-            ),
-          }
-        : undefined,
+      allowedTools: voice.allowedTools.map((value) => value.trim()).filter(Boolean),
+      requiredTool: voice.requiredTool?.trim() || undefined,
       executionMode: voice.executionMode,
       escalationPolicy: voice.escalationPolicy,
       answerMode: voice.answerMode,

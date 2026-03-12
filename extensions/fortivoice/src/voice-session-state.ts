@@ -3,11 +3,11 @@ import { randomUUID } from "node:crypto";
 export type VoiceSessionSnapshot = {
   activeTurnId?: string;
   pendingSkill?: string;
+  agentOwnedSkill?: string;
   lastSelectedSkill?: string;
   activeSlot?: string;
   activeSlotPrompt?: string;
   slotMode?: "collecting" | "idle";
-  awaitingConfirmation?: boolean;
   pendingSlots: Record<string, string>;
   waitPromptSentForTurn?: string;
 };
@@ -26,11 +26,11 @@ function cloneSnapshot(state?: VoiceSessionState): VoiceSessionSnapshot {
   return {
     activeTurnId: state?.activeTurnId,
     pendingSkill: state?.pendingSkill,
+    agentOwnedSkill: state?.agentOwnedSkill,
     lastSelectedSkill: state?.lastSelectedSkill,
     activeSlot: state?.activeSlot,
     activeSlotPrompt: state?.activeSlotPrompt,
     slotMode: state?.slotMode,
-    awaitingConfirmation: state?.awaitingConfirmation,
     pendingSlots: { ...(state?.pendingSlots ?? {}) },
     waitPromptSentForTurn: state?.waitPromptSentForTurn,
   };
@@ -52,11 +52,11 @@ export function startVoiceTurn(params: {
   const next: VoiceSessionState = {
     activeTurnId: randomUUID(),
     pendingSkill: existing?.pendingSkill,
+    agentOwnedSkill: existing?.agentOwnedSkill,
     lastSelectedSkill: existing?.lastSelectedSkill,
     activeSlot: existing?.activeSlot,
     activeSlotPrompt: existing?.activeSlotPrompt,
     slotMode: existing?.slotMode,
-    awaitingConfirmation: existing?.awaitingConfirmation,
     pendingSlots: { ...(existing?.pendingSlots ?? {}) },
     waitPromptSentForTurn: undefined,
     updatedAt: Date.now(),
@@ -79,15 +79,13 @@ export function updateVoiceSessionState(
   const next: VoiceSessionState = {
     activeTurnId: has("activeTurnId") ? patch.activeTurnId : existing?.activeTurnId,
     pendingSkill: has("pendingSkill") ? patch.pendingSkill : existing?.pendingSkill,
+    agentOwnedSkill: has("agentOwnedSkill") ? patch.agentOwnedSkill : existing?.agentOwnedSkill,
     lastSelectedSkill: has("lastSelectedSkill")
       ? patch.lastSelectedSkill
       : existing?.lastSelectedSkill,
     activeSlot: has("activeSlot") ? patch.activeSlot : existing?.activeSlot,
     activeSlotPrompt: has("activeSlotPrompt") ? patch.activeSlotPrompt : existing?.activeSlotPrompt,
     slotMode: has("slotMode") ? patch.slotMode : existing?.slotMode,
-    awaitingConfirmation: has("awaitingConfirmation")
-      ? patch.awaitingConfirmation
-      : existing?.awaitingConfirmation,
     pendingSlots: patch.pendingSlots
       ? { ...patch.pendingSlots }
       : { ...(existing?.pendingSlots ?? {}) },
@@ -126,10 +124,10 @@ export function clearVoiceSessionPendingState(params: {
 }): VoiceSessionSnapshot {
   return updateVoiceSessionState(params, {
     pendingSkill: undefined,
+    agentOwnedSkill: undefined,
     activeSlot: undefined,
     activeSlotPrompt: undefined,
     slotMode: "idle",
-    awaitingConfirmation: false,
     pendingSlots: {},
     waitPromptSentForTurn: undefined,
   });

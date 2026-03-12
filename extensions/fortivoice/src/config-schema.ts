@@ -15,6 +15,7 @@ const wsUrlSchema = z
 
 const phoneSchema = z.string().min(1, "FortiVoice phone must not be empty");
 const routerProviderSchema = z.enum(["openai", "groq"]);
+const agentExecutionModeSchema = z.enum(["legacy", "skill_locked"]);
 
 export const FortivoiceAccountConfigSchema = z.object({
   enabled: z.boolean().optional(),
@@ -26,6 +27,7 @@ export const FortivoiceAccountConfigSchema = z.object({
   routerProvider: routerProviderSchema.optional(),
   routerModel: z.string().min(1).optional(),
   routerBaseUrl: z.string().url().optional(),
+  agentExecutionMode: agentExecutionModeSchema.optional(),
   voiceSkillAllowlist: z.array(z.string().min(1)).optional(),
   markdown: MarkdownConfigSchema,
 });
@@ -41,6 +43,7 @@ export const FortivoiceConfigSchema = z.object({
   routerProvider: routerProviderSchema.optional(),
   routerModel: z.string().min(1).optional(),
   routerBaseUrl: z.string().url().optional(),
+  agentExecutionMode: agentExecutionModeSchema.optional(),
   voiceSkillAllowlist: z.array(z.string().min(1)).optional(),
   markdown: MarkdownConfigSchema,
   accounts: z.record(z.string(), FortivoiceAccountConfigSchema).optional(),

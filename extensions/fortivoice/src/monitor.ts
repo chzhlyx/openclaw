@@ -7,6 +7,7 @@ import {
   type RuntimeEnv,
 } from "openclaw/plugin-sdk";
 import WebSocket from "ws";
+import type { LockedSkillExecution } from "../../../src/auto-reply/types.js";
 import type { CoreConfig, ResolvedFortivoiceAccount } from "./types.js";
 import type { VoiceRouteDecision } from "./voice-router.js";
 import {
@@ -43,13 +44,7 @@ import {
   startVoiceTurn,
   updateVoiceSessionState,
 } from "./voice-session-state.js";
-import {
-  buildVoiceExecutionConfirmationPrompt,
-  executeVoiceToolSkill,
-  hasExecutableVoiceAction,
-  interpretVoiceExecutionConfirmationReply,
-  resolveDeterministicVoiceAnswer,
-} from "./voice-skill-executor.js";
+import { resolveDeterministicVoiceAnswer } from "./voice-skill-executor.js";
 
 const HELLO_WORLD_TEXT = "Hello, this is FortiVoice AI assistant, how can I help you";
 const FORTIVOICE_TEXT_LIMIT = 700;
@@ -66,6 +61,8 @@ const FORTIVOICE_COLLECT_ENABLED = false;
 const FORTIVOICE_ROUTER_PROVIDER = process.env.FORTIVOICE_ROUTER_PROVIDER?.trim() || "openai";
 const FORTIVOICE_ROUTER_MODEL = process.env.FORTIVOICE_ROUTER_MODEL?.trim() || "gpt-4o-mini";
 const FORTIVOICE_ROUTER_BASE_URL = process.env.FORTIVOICE_ROUTER_BASE_URL?.trim() || undefined;
+const FORTIVOICE_AGENT_EXECUTION_MODE =
+  process.env.FORTIVOICE_AGENT_EXECUTION_MODE?.trim() || "skill_locked";
 
 type FortivoiceRuntimeEnv = RuntimeEnv;
 type FortivoiceLogger = {
@@ -263,6 +260,30 @@ function resolveRouterBaseUrl(account: ResolvedFortivoiceAccount): string | unde
   return account.config.routerBaseUrl?.trim() || FORTIVOICE_ROUTER_BASE_URL;
 }
 
+function resolveAgentExecutionMode(account: ResolvedFortivoiceAccount): "legacy" | "skill_locked" {
+  const configured =
+    account.config.agentExecutionMode?.trim().toLowerCase() || FORTIVOICE_AGENT_EXECUTION_MODE;
+  return configured === "legacy" ? "legacy" : "skill_locked";
+}
+
+function buildLockedExecutionSpec(skill: VoiceSkillManifest): LockedSkillExecution | undefined {
+  if (!skill.toolRequired || skill.executionMode !== "agentic") {
+    return undefined;
+  }
+  const allowedTools =
+    skill.allowedTools.length > 0 ? skill.allowedTools : ["read", "exec", "process"];
+  return {
+    mode: "skill_locked",
+    skillName: skill.skillName,
+    skillPath: skill.skillPath,
+    skillInstructions: skill.skillInstructions,
+    allowedTools,
+    requiredTool: skill.requiredTool,
+    waitPrompt: skill.waitPrompt,
+    failureReplyText: skill.failurePrompt,
+  };
+}
+
 function resolveVoicePrompt(skill: VoiceSkillManifest, slotName: string): string {
   return skill.missingSlotPrompts[slotName] || "Could you share the missing detail?";
 }
@@ -275,9 +296,13 @@ export function buildFortivoiceAgentHandoffInput(params: {
   latestUserText: string;
   activeSkill?: string;
   collectedSlots?: Record<string, string>;
+  waitPrompt?: string;
+  toolRequired?: boolean;
 }): string {
   const latestUserText = params.latestUserText.trim();
   const activeSkill = params.activeSkill?.trim();
+  const waitPrompt = params.waitPrompt?.trim();
+  const toolRequired = params.toolRequired === true;
   const slotLines = Object.entries(params.collectedSlots ?? {})
     .map(([key, value]) => [key.trim(), String(value ?? "").trim()] as const)
     .filter(([key, value]) => Boolean(key) && Boolean(value))
@@ -290,6 +315,7 @@ export function buildFortivoiceAgentHandoffInput(params: {
   const sections = [
     "FortiVoice voice routing context:",
     activeSkill ? `Active skill: ${activeSkill}` : "",
+    waitPrompt ? `Execution wait prompt: ${waitPrompt}` : "",
     slotLines.length > 0 ? "Collected slots:" : "",
     ...slotLines,
     "",
@@ -297,6 +323,15 @@ export function buildFortivoiceAgentHandoffInput(params: {
     latestUserText,
     "",
     "Continue using the active skill and the collected slot state. Do not ask for already collected values again unless the caller corrects them.",
+    toolRequired
+      ? "This skill requires real command or tool execution. Do not claim completion or success unless you actually execute the required command/tool and observe success in this turn."
+      : "",
+    waitPrompt
+      ? `If you are about to execute a command or tool call that may take time, first tell the caller: "${waitPrompt}".`
+      : "",
+    waitPrompt
+      ? "Do not bundle the wait prompt together with the final result. Say the wait prompt first, then execute, then return the final result separately."
+      : "",
   ].filter(Boolean);
   return sections.join("\n");
 }
@@ -312,6 +347,17 @@ function buildSingleSpeakAction(params: { requestId: string; text: string }): Fo
       messageId: `${params.requestId}-1`,
     }),
   ];
+}
+
+function stripLeadingWaitPrompt(text: string, waitPrompt?: string): string {
+  const prompt = waitPrompt?.trim();
+  const value = text.trim();
+  if (!prompt || !value) {
+    return value;
+  }
+  const escaped = prompt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^${escaped}(?:[.!?])?(?:\\s+|$)`, "i");
+  return value.replace(pattern, "").trim();
 }
 
 export function buildVoiceFailureFallback(params: {
@@ -335,13 +381,10 @@ export function shouldEmitWaitPrompt(params: {
   if (!skill?.toolRequired || !skill.waitPrompt) {
     return false;
   }
-  if (decision.decision === "wait_and_execute") {
-    return true;
-  }
-  if (decision.decision !== "fallback_agent") {
+  if (skill.executionMode === "agentic") {
     return false;
   }
-  return decision.missingSlots.length === 0;
+  return decision.decision === "wait_and_execute";
 }
 
 function recordImmediateOutboundActivity(params: {
@@ -392,6 +435,28 @@ function findManifestSkill(
   return manifest.find((entry) => entry.skillName === skillName);
 }
 
+function looksLikeAgentSkillInterrupt(text: string): boolean {
+  const normalized = text
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s?]/gu, " ")
+    .trim();
+  if (!normalized) {
+    return false;
+  }
+  if (
+    /^(actually|instead|never mind|forget it|cancel that|different question|another question)\b/.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  if (/^(what|when|where|who|why|how|can|could|do|does|is|are)\b/.test(normalized)) {
+    return true;
+  }
+  return normalized.split(/\s+/).length >= 5;
+}
+
 async function buildVoiceActions(params: {
   request: FortivoiceRequestEnvelope;
   account: ResolvedFortivoiceAccount;
@@ -410,31 +475,6 @@ async function buildVoiceActions(params: {
     accountId: account.accountId,
     sessionId,
   });
-  const completeDeterministicToolTurn = async (
-    selectedSkill: VoiceSkillManifest,
-  ): Promise<FortivoiceAction[]> => {
-    await emitWaitPromptIfNeeded(selectedSkill);
-    const executionSnapshot = getVoiceSessionSnapshot({
-      accountId: account.accountId,
-      sessionId,
-    });
-    const execution = await executeVoiceToolSkill({
-      skill: selectedSkill,
-      slots: executionSnapshot.pendingSlots,
-    });
-    clearVoiceSessionPendingState({
-      accountId: account.accountId,
-      sessionId,
-    });
-    recordImmediateOutboundActivity({
-      accountId: account.accountId,
-      statusSink,
-    });
-    return buildSingleSpeakAction({
-      requestId: request.req_id,
-      text: execution.speakText,
-    });
-  };
   const completeVoiceSkillTurn = async (
     selectedSkill: VoiceSkillManifest,
     latestText: string,
@@ -443,17 +483,14 @@ async function buildVoiceActions(params: {
     updateVoiceSessionState(
       { accountId: account.accountId, sessionId },
       {
-        pendingSkill: selectedSkill.skillName,
+        pendingSkill: selectedSkill.toolRequired ? undefined : selectedSkill.skillName,
+        agentOwnedSkill: selectedSkill.toolRequired ? selectedSkill.skillName : undefined,
         lastSelectedSkill: selectedSkill.skillName,
         activeSlot: undefined,
         activeSlotPrompt: undefined,
         slotMode: "idle",
-        awaitingConfirmation: false,
       },
     );
-    if (hasExecutableVoiceAction(selectedSkill)) {
-      return completeDeterministicToolTurn(selectedSkill);
-    }
     if (options?.emitWaitPrompt) {
       await emitWaitPromptIfNeeded(selectedSkill);
     }
@@ -471,7 +508,14 @@ async function buildVoiceActions(params: {
         latestUserText: latestText,
         activeSkill: handoffSnapshot.pendingSkill ?? selectedSkill.skillName,
         collectedSlots: handoffSnapshot.pendingSlots,
+        waitPrompt: selectedSkill.waitPrompt,
+        toolRequired: selectedSkill.toolRequired,
       }),
+      selectedSkill,
+      lockedExecution:
+        resolveAgentExecutionMode(account) === "skill_locked"
+          ? buildLockedExecutionSpec(selectedSkill)
+          : undefined,
       cfg,
       runtime,
       statusSink,
@@ -532,44 +576,51 @@ async function buildVoiceActions(params: {
     }
   };
   const pendingSkill = findManifestSkill(voiceManifest, sessionState.pendingSkill);
-  if (sessionState.awaitingConfirmation && pendingSkill && hasExecutableVoiceAction(pendingSkill)) {
-    const confirmation = interpretVoiceExecutionConfirmationReply(text);
-    if (confirmation === "confirm") {
-      return completeDeterministicToolTurn(pendingSkill);
-    }
-    if (confirmation === "cancel") {
-      updateVoiceSessionState(
-        { accountId: account.accountId, sessionId },
-        {
-          pendingSkill: pendingSkill.skillName,
-          lastSelectedSkill: pendingSkill.skillName,
-          activeSlot: undefined,
-          activeSlotPrompt: undefined,
-          slotMode: "idle",
-          awaitingConfirmation: false,
-        },
-      );
+  const agentOwnedSkill = findManifestSkill(voiceManifest, sessionState.agentOwnedSkill);
+  if (agentOwnedSkill && !pendingSkill && sessionState.slotMode !== "collecting") {
+    if (looksLikeAgentSkillInterrupt(text)) {
+      clearVoiceSessionPendingState({
+        accountId: account.accountId,
+        sessionId,
+      });
+    } else {
+      const agentActions = await buildAgentActions({
+        request,
+        account,
+        sessionId,
+        text,
+        agentInputText: buildFortivoiceAgentHandoffInput({
+          latestUserText: text,
+          activeSkill: agentOwnedSkill.skillName,
+          collectedSlots: sessionState.pendingSlots,
+          waitPrompt: agentOwnedSkill.waitPrompt,
+          toolRequired: agentOwnedSkill.toolRequired,
+        }),
+        selectedSkill: agentOwnedSkill,
+        lockedExecution:
+          resolveAgentExecutionMode(account) === "skill_locked"
+            ? buildLockedExecutionSpec(agentOwnedSkill)
+            : undefined,
+        cfg,
+        runtime,
+        statusSink,
+      });
+      if (agentActions.length > 0) {
+        return agentActions;
+      }
+      clearVoiceSessionPendingState({
+        accountId: account.accountId,
+        sessionId,
+      });
       recordImmediateOutboundActivity({
         accountId: account.accountId,
         statusSink,
       });
-      return buildSingleSpeakAction({
+      return buildVoiceFailureFallback({
         requestId: request.req_id,
-        text: "Okay. Tell me what you would like to change.",
+        skill: agentOwnedSkill,
       });
     }
-    const confirmationPrompt = buildVoiceExecutionConfirmationPrompt({
-      skill: pendingSkill,
-      slots: sessionState.pendingSlots,
-    });
-    recordImmediateOutboundActivity({
-      accountId: account.accountId,
-      statusSink,
-    });
-    return buildSingleSpeakAction({
-      requestId: request.req_id,
-      text: confirmationPrompt ?? "Please confirm if you want me to complete that request now.",
-    });
   }
   if (sessionState.slotMode === "collecting" && pendingSkill && sessionState.activeSlot) {
     const slotDecision = await classifySlotTurn({
@@ -604,11 +655,11 @@ async function buildVoiceActions(params: {
           { accountId: account.accountId, sessionId },
           {
             pendingSkill: pendingSkill.skillName,
+            agentOwnedSkill: undefined,
             lastSelectedSkill: pendingSkill.skillName,
             activeSlot: nextSlot,
             activeSlotPrompt: resolveVoicePrompt(pendingSkill, nextSlot),
             slotMode: "collecting",
-            awaitingConfirmation: false,
           },
         );
         recordImmediateOutboundActivity({
@@ -620,33 +671,21 @@ async function buildVoiceActions(params: {
           text: resolveVoicePrompt(pendingSkill, nextSlot),
         });
       }
-      const confirmationPrompt = buildVoiceExecutionConfirmationPrompt({
-        skill: pendingSkill,
-        slots: mergedSnapshot.pendingSlots,
-      });
-      if (confirmationPrompt) {
-        updateVoiceSessionState(
-          { accountId: account.accountId, sessionId },
-          {
-            pendingSkill: pendingSkill.skillName,
-            lastSelectedSkill: pendingSkill.skillName,
-            activeSlot: undefined,
-            activeSlotPrompt: undefined,
-            slotMode: "idle",
-            awaitingConfirmation: true,
-          },
-        );
-        recordImmediateOutboundActivity({
-          accountId: account.accountId,
-          statusSink,
-        });
-        return buildSingleSpeakAction({
-          requestId: request.req_id,
-          text: confirmationPrompt,
-        });
-      }
       return completeVoiceSkillTurn(pendingSkill, text, {
-        emitWaitPrompt: pendingSkill.toolRequired,
+        emitWaitPrompt: shouldEmitWaitPrompt({
+          decision: {
+            decision: "wait_and_execute",
+            skill: pendingSkill.skillName,
+            confidence: 1,
+            slots: mergedSnapshot.pendingSlots,
+            missingSlots: [],
+            toolRequired: pendingSkill.toolRequired,
+            executionMode: pendingSkill.executionMode,
+            escalationPolicy: pendingSkill.escalationPolicy,
+            reason: "slot_collection_complete",
+          },
+          skill: pendingSkill,
+        }),
       });
     }
 
@@ -659,11 +698,11 @@ async function buildVoiceActions(params: {
         { accountId: account.accountId, sessionId },
         {
           pendingSkill: pendingSkill.skillName,
+          agentOwnedSkill: undefined,
           lastSelectedSkill: pendingSkill.skillName,
           activeSlot: sessionState.activeSlot,
           activeSlotPrompt: reprompt,
           slotMode: "collecting",
-          awaitingConfirmation: false,
         },
       );
       recordImmediateOutboundActivity({
@@ -743,10 +782,10 @@ async function buildVoiceActions(params: {
       { accountId: account.accountId, sessionId },
       {
         pendingSkill: selectedSkill.skillName,
+        agentOwnedSkill: undefined,
         activeSlot: nextSlot,
         activeSlotPrompt: resolveVoicePrompt(selectedSkill, nextSlot),
         slotMode: "collecting",
-        awaitingConfirmation: false,
       },
     );
     recordImmediateOutboundActivity({
@@ -774,45 +813,16 @@ async function buildVoiceActions(params: {
     updateVoiceSessionState(
       { accountId: account.accountId, sessionId },
       {
-        pendingSkill: selectedSkill.skillName,
+        pendingSkill: selectedSkill.toolRequired ? undefined : selectedSkill.skillName,
+        agentOwnedSkill: selectedSkill.toolRequired ? selectedSkill.skillName : undefined,
         activeSlot: undefined,
         activeSlotPrompt: undefined,
         slotMode: "idle",
-        awaitingConfirmation: false,
       },
     );
   }
 
   if (selectedSkill) {
-    const latestSnapshot = getVoiceSessionSnapshot({
-      accountId: account.accountId,
-      sessionId,
-    });
-    const confirmationPrompt = buildVoiceExecutionConfirmationPrompt({
-      skill: selectedSkill,
-      slots: latestSnapshot.pendingSlots,
-    });
-    if (confirmationPrompt) {
-      updateVoiceSessionState(
-        { accountId: account.accountId, sessionId },
-        {
-          pendingSkill: selectedSkill.skillName,
-          lastSelectedSkill: selectedSkill.skillName,
-          activeSlot: undefined,
-          activeSlotPrompt: undefined,
-          slotMode: "idle",
-          awaitingConfirmation: true,
-        },
-      );
-      recordImmediateOutboundActivity({
-        accountId: account.accountId,
-        statusSink,
-      });
-      return buildSingleSpeakAction({
-        requestId: request.req_id,
-        text: confirmationPrompt,
-      });
-    }
     return completeVoiceSkillTurn(selectedSkill, text, {
       emitWaitPrompt: shouldEmitWaitPrompt({
         decision,
@@ -838,11 +848,24 @@ async function buildAgentActions(params: {
   sessionId: string;
   text: string;
   agentInputText?: string;
+  selectedSkill?: VoiceSkillManifest;
+  lockedExecution?: LockedSkillExecution;
   cfg: OpenClawConfig;
   runtime: FortivoiceRuntimeEnv;
   statusSink?: (patch: Partial<ChannelAccountSnapshot>) => void;
 }): Promise<FortivoiceAction[]> {
-  const { request, account, sessionId, text, agentInputText, cfg, runtime, statusSink } = params;
+  const {
+    request,
+    account,
+    sessionId,
+    text,
+    agentInputText,
+    selectedSkill,
+    lockedExecution,
+    cfg,
+    runtime,
+    statusSink,
+  } = params;
   const core = getFortivoiceRuntime();
 
   const route = core.channel.routing.resolveAgentRoute({
@@ -908,6 +931,8 @@ async function buildAgentActions(params: {
 
   const actions: FortivoiceAction[] = [];
   let actionIndex = 0;
+  let streamedWaitPromptSent = false;
+  const lockedWaitPrompt = lockedExecution?.waitPrompt?.trim();
   const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
     cfg,
     agentId: route.agentId,
@@ -920,7 +945,7 @@ async function buildAgentActions(params: {
     cfg,
     dispatcherOptions: {
       ...prefixOptions,
-      deliver: async (payload: ReplyPayload) => {
+      deliver: async (payload: ReplyPayload, info) => {
         const tableSafe = core.channel.text.convertMarkdownTables(payload.text ?? "", tableMode);
         const mediaList = payload.mediaUrls?.length
           ? payload.mediaUrls
@@ -931,7 +956,25 @@ async function buildAgentActions(params: {
           mediaList.length > 0
             ? `\n[media not supported in FortiVoice text bridge: ${mediaList.join(", ")}]`
             : "";
-        const combined = `${tableSafe}${mediaNotice}`.trim();
+        let combined = `${tableSafe}${mediaNotice}`.trim();
+        if (
+          info.kind === "block" &&
+          lockedWaitPrompt &&
+          !streamedWaitPromptSent &&
+          combined.toLowerCase().startsWith(lockedWaitPrompt.toLowerCase())
+        ) {
+          const waitActions = buildSingleSpeakAction({
+            requestId: request.req_id,
+            text: lockedWaitPrompt,
+          });
+          if (waitActions.length > 0) {
+            await params.emitActionsEvent?.(waitActions);
+            streamedWaitPromptSent = true;
+          }
+        }
+        if (streamedWaitPromptSent) {
+          combined = stripLeadingWaitPrompt(combined, lockedWaitPrompt);
+        }
         if (!combined) {
           return;
         }
@@ -1017,6 +1060,10 @@ async function buildAgentActions(params: {
     },
     replyOptions: {
       onModelSelected,
+      skillFilter: lockedExecution
+        ? [selectedSkill?.skillName ?? lockedExecution.skillName]
+        : undefined,
+      executionLock: lockedExecution,
     },
   });
 

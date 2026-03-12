@@ -58,6 +58,7 @@ import {
 } from "../../skills.js";
 import { buildSystemPromptParams } from "../../system-prompt-params.js";
 import { buildSystemPromptReport } from "../../system-prompt-report.js";
+import { normalizeToolName } from "../../tool-policy.js";
 import { resolveTranscriptPolicy } from "../../transcript-policy.js";
 import { DEFAULT_BOOTSTRAP_FILENAME } from "../../workspace.js";
 import { isAbortError } from "../abort.js";
@@ -244,7 +245,14 @@ export async function runEmbeddedAttempt(
             params.requireExplicitMessageTarget ?? isSubagentSessionKey(params.sessionKey),
           disableMessageTool: params.disableMessageTool,
         });
-    const tools = sanitizeToolsForGoogle({ tools: toolsRaw, provider: params.provider });
+    const allowedToolSet =
+      params.allowedTools && params.allowedTools.length > 0
+        ? new Set(params.allowedTools.map((tool) => normalizeToolName(tool)).filter(Boolean))
+        : null;
+    const filteredToolsRaw = allowedToolSet
+      ? toolsRaw.filter((tool) => allowedToolSet.has(normalizeToolName(tool.name)))
+      : toolsRaw;
+    const tools = sanitizeToolsForGoogle({ tools: filteredToolsRaw, provider: params.provider });
     logToolSchemasForGoogle({ tools, provider: params.provider });
 
     const machineName = await getMachineDisplayName();

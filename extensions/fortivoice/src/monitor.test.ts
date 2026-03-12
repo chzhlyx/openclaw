@@ -43,6 +43,8 @@ describe("fortivoice monitor", () => {
     const handoff = buildFortivoiceAgentHandoffInput({
       latestUserText: "613-555-0100",
       activeSkill: "leave_message",
+      waitPrompt: "One moment while I send that message.",
+      toolRequired: true,
       collectedSlots: {
         department: "sales",
         caller_name: "John Smith",
@@ -51,10 +53,20 @@ describe("fortivoice monitor", () => {
     });
 
     expect(handoff).toContain("Active skill: leave_message");
+    expect(handoff).toContain("Execution wait prompt: One moment while I send that message.");
     expect(handoff).toContain("- department: sales");
     expect(handoff).toContain("- caller_name: John Smith");
     expect(handoff).toContain("Latest caller utterance:");
     expect(handoff).toContain("613-555-0100");
+    expect(handoff).toContain(
+      "This skill requires real command or tool execution. Do not claim completion or success unless you actually execute the required command/tool and observe success in this turn.",
+    );
+    expect(handoff).toContain(
+      'If you are about to execute a command or tool call that may take time, first tell the caller: "One moment while I send that message.".',
+    );
+    expect(handoff).toContain(
+      "Do not bundle the wait prompt together with the final result. Say the wait prompt first, then execute, then return the final result separately.",
+    );
   });
 
   it("returns latest user text unchanged when no slot context exists", () => {
@@ -72,6 +84,7 @@ describe("fortivoice monitor", () => {
       skill: {
         skillName: "weather",
         skillPath: "/tmp/weather/SKILL.md",
+        skillInstructions: "# weather",
         intentExamples: [],
         requiredSlots: ["city"],
         optionalSlots: [],
@@ -80,6 +93,8 @@ describe("fortivoice monitor", () => {
         slotConstraints: {},
         waitPrompt: "One moment while I check that.",
         failurePrompt: "I couldn't retrieve the weather right now. Please try again.",
+        allowedTools: ["read", "exec", "process"],
+        requiredTool: "exec",
         executionMode: "agentic",
         escalationPolicy: "on_low_confidence",
         answerMode: "none",
@@ -113,6 +128,7 @@ describe("fortivoice monitor", () => {
         skill: {
           skillName: "leave_message",
           skillPath: "/tmp/leave-message/SKILL.md",
+          skillInstructions: "# leave_message",
           intentExamples: [],
           requiredSlots: ["department", "caller_name", "message", "contact"],
           optionalSlots: [],
@@ -120,6 +136,8 @@ describe("fortivoice monitor", () => {
           missingSlotPrompts: { department: "Should I send this to Sales or Service?" },
           slotConstraints: {},
           waitPrompt: "One moment while I send that message.",
+          allowedTools: ["read", "exec", "process"],
+          requiredTool: "exec",
           executionMode: "agentic",
           escalationPolicy: "always",
           answerMode: "none",
@@ -128,7 +146,7 @@ describe("fortivoice monitor", () => {
     ).toBe(false);
   });
 
-  it("emits the wait prompt when execution is ready", () => {
+  it("does not emit the wait prompt for agent-owned skills at handoff", () => {
     expect(
       shouldEmitWaitPrompt({
         decision: {
@@ -145,6 +163,7 @@ describe("fortivoice monitor", () => {
         skill: {
           skillName: "weather",
           skillPath: "/tmp/weather/SKILL.md",
+          skillInstructions: "# weather",
           intentExamples: [],
           requiredSlots: ["city"],
           optionalSlots: [],
@@ -152,7 +171,44 @@ describe("fortivoice monitor", () => {
           missingSlotPrompts: { city: "What city should I check?" },
           slotConstraints: {},
           waitPrompt: "One moment while I check that.",
+          allowedTools: ["read", "exec", "process"],
+          requiredTool: "exec",
           executionMode: "agentic",
+          escalationPolicy: "on_low_confidence",
+          answerMode: "none",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("emits the wait prompt for deterministic tool execution when ready", () => {
+    expect(
+      shouldEmitWaitPrompt({
+        decision: {
+          decision: "wait_and_execute",
+          skill: "weather",
+          confidence: 0.95,
+          slots: { city: "Ottawa" },
+          missingSlots: [],
+          toolRequired: true,
+          executionMode: "deterministic",
+          escalationPolicy: "on_low_confidence",
+          reason: "ready",
+        },
+        skill: {
+          skillName: "weather",
+          skillPath: "/tmp/weather/SKILL.md",
+          skillInstructions: "# weather",
+          intentExamples: [],
+          requiredSlots: ["city"],
+          optionalSlots: [],
+          toolRequired: true,
+          missingSlotPrompts: { city: "What city should I check?" },
+          slotConstraints: {},
+          waitPrompt: "One moment while I check that.",
+          allowedTools: ["read", "exec", "process"],
+          requiredTool: "exec",
+          executionMode: "deterministic",
           escalationPolicy: "on_low_confidence",
           answerMode: "none",
         },

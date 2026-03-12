@@ -20,6 +20,8 @@ export type EmbeddedPiRunMeta = {
   agentMeta?: EmbeddedPiAgentMeta;
   aborted?: boolean;
   systemPromptReport?: SessionSystemPromptReport;
+  toolMetas?: Array<{ toolName: string; meta?: string }>;
+  lastToolError?: { toolName: string; meta?: string; error?: string };
   error?: {
     kind: "context_overflow" | "compaction_failure" | "role_ordering" | "image_size";
     message: string;

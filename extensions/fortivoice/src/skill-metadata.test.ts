@@ -117,18 +117,9 @@ metadata:
                   },
               },
             "failurePrompt": "I couldn't complete that request.",
-            "execution":
-              {
-                "kind": "department_email",
-                "requiresConfirmation": true,
-                "fromHeader": "FortiVoice AI assistant <sender@example.com>",
-                "routes":
-                  {
-                    "sales": "sales@example.com",
-                    "service": "service@example.com",
-                  },
-              },
-            "executionMode": "deterministic",
+            "allowedTools": ["read", "exec", "process"],
+            "requiredTool": "exec",
+            "executionMode": "agentic",
             "escalationPolicy": "on_low_confidence",
             "answerMode": "knowledge",
           },
@@ -161,15 +152,9 @@ metadata:
       "what are your business hours",
     ]);
     expect(manifest[0]?.failurePrompt).toBe("I couldn't complete that request.");
-    expect(manifest[0]?.execution).toEqual({
-      kind: "department_email",
-      requiresConfirmation: true,
-      fromHeader: "FortiVoice AI assistant <sender@example.com>",
-      routes: {
-        sales: "sales@example.com",
-        service: "service@example.com",
-      },
-    });
+    expect(manifest[0]?.allowedTools).toEqual(["read", "exec", "process"]);
+    expect(manifest[0]?.requiredTool).toBe("exec");
+    expect(manifest[0]?.executionMode).toBe("agentic");
     expect(manifest[0]?.slotConstraints.department?.allowedValues).toEqual(["sales", "service"]);
     expect(manifest[0]?.slotConstraints.department?.reprompt).toBe(
       "Should I send this to Sales or Service?",

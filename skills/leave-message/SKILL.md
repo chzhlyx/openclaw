@@ -39,16 +39,11 @@ metadata:
                     "reprompt": "Should I send this to Sales or Service?",
                   },
               },
-            "waitPrompt": "One moment while I send that message.",
+            "waitPrompt": "One moment while I send that message",
             "failurePrompt": "I couldn't send that message right now. Please try again.",
-            "execution":
-              {
-                "kind": "department_email",
-                "requiresConfirmation": true,
-                "fromHeader": "FortiVoice AI assistant <yucao.ca@gmail.com>",
-                "routes": { "sales": "yucao@fortinet.com", "service": "yucao.ca@gmail.com" },
-              },
-            "executionMode": "deterministic",
+            "allowedTools": ["read", "exec", "process"],
+            "requiredTool": "exec",
+            "executionMode": "agentic",
             "escalationPolicy": "on_low_confidence",
             "answerMode": "none",
           },
@@ -74,23 +69,8 @@ inputs:
     - request
 
 outputs:
-  type: object
-  properties:
-    answer:
-      type: string
-      description: Final spoken response to the caller
-    department:
-      type: string
-      description: sales or service
-    to_email:
-      type: string
-      description: Destination email resolved from department mapping
-    status:
-      type: string
-      description: collected, sent, or failed
-    suggested_next_skill:
-      type: string
-      description: Optional escalation skill when send fails or caller needs live help
+  type: string
+  description: Final spoken response to the caller in natural voice-friendly language only
 ---
 
 # Leave Department Message
@@ -134,8 +114,10 @@ Do not route to any other address in this skill.
 2. Resolve `department`; if unclear, ask "Should I send this to Sales or Service?"
 3. Collect missing required fields one at a time.
 4. Read back a short summary and ask for explicit confirmation.
-5. Only after confirmation, send one email to the mapped department.
-6. Return a short spoken confirmation to the caller.
+5. If the caller does not clearly confirm, do not send anything; continue clarification or correction.
+6. Immediately before the actual send command, tell the caller: "One moment while I send that message."
+7. Only after confirmation, execute one real email send command to the mapped department.
+8. Return a short spoken confirmation to the caller only after the send command succeeds.
 
 ## Validation Rules
 
@@ -147,6 +129,18 @@ Do not route to any other address in this skill.
 ## Email Sending Contract
 
 Use `himalaya` if configured.
+
+Before any success response, you MUST execute a real shell command via the exec tool that sends the email. Do not simulate execution. Do not describe what you would do. Do not stop after confirmation. The message counts as sent only if the exec tool returns success for the send command in this turn.
+
+Mandatory execution sequence:
+
+1. After the caller explicitly confirms, say exactly: `One moment while I send that message.`
+2. Call the exec tool and run the real `himalaya template send` command.
+3. Inspect the exec result.
+4. Only if the exec result shows success should you tell the caller the message was sent.
+
+A plain text answer without an exec tool call is invalid for this step.
+A plain text answer that says or implies "sent" without a successful exec result is invalid for this step.
 
 Subject format:
 
@@ -180,22 +174,23 @@ Message: Please send pricing for 30 users and setup timeline.
 EOF
 ```
 
-If email tooling is unavailable or sending fails, set `status` to `failed`, apologize briefly, and set `suggested_next_skill` to `handoff_to_human`.
+Execution requirements:
+
+- Use the exec tool to run `himalaya template send`.
+- Execute the send exactly once after explicit confirmation.
+- Treat the send as successful only if the exec tool exits with code `0`.
+- If the exec result is missing, failed, or non-zero, set `status` to `failed`.
+- If sending fails, apologize briefly and set `suggested_next_skill` to `handoff_to_human`.
+- Do not combine the wait prompt with the final success message. They must be separate assistant turns.
 
 ## Output Rules
 
 - Keep spoken responses concise and natural for voice calls.
-- Never claim the message was sent unless the send command succeeds.
+- Return caller-facing speech only. Do not output JSON, YAML, field lists, or code blocks.
+- Never claim the message was sent unless you observed a successful exec result for the send command in this turn.
+- If no successful exec result exists, do not say or imply that the message was sent.
 - Never reveal internal errors to callers; provide a polite fallback.
 
-## Example Output
+## Example Final Spoken Reply
 
-```json
-{
-  "answer": "Thanks, I have sent your message to our sales team. They will follow up using the contact details you provided.",
-  "department": "sales",
-  "to_email": "yucao@fortinet.com",
-  "status": "sent",
-  "suggested_next_skill": ""
-}
-```
+`Thanks, I have sent your message to our sales team. They will follow up using the contact details you provided.`

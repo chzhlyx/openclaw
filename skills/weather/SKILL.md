@@ -23,6 +23,8 @@ metadata:
             "missingSlotPrompts": { "city": "What city should I check?" },
             "waitPrompt": "One moment while I check that.",
             "failurePrompt": "I couldn't retrieve the weather right now. Please try again.",
+            "allowedTools": ["read", "exec", "process"],
+            "requiredTool": "exec",
             "executionMode": "agentic",
             "escalationPolicy": "on_low_confidence",
             "answerMode": "none",

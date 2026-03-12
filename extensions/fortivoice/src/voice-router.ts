@@ -303,6 +303,46 @@ function buildSlotTurnPrompt(params: {
   });
 }
 
+function hasExplicitInterruptSignal(text: string): boolean {
+  return (
+    /^(actually|instead|never mind|forget it|cancel that|different question|another question)\b/i.test(
+      text,
+    ) ||
+    /^(what|when|where|why|how|who)\b/i.test(text) ||
+    text.includes("?")
+  );
+}
+
+function isUnconstrainedSlot(skill: VoiceSkillManifest, activeSlot: string): boolean {
+  const constraint = skill.slotConstraints[activeSlot];
+  return (constraint?.allowedValues?.length ?? 0) === 0;
+}
+
+function coerceFreeformSlotDecision(params: {
+  payload: SlotTurnResponsePayload;
+  skill: VoiceSkillManifest;
+  activeSlot: string;
+  text: string;
+}): SlotTurnResponsePayload {
+  if (params.payload.turnType !== "clear_interrupt") {
+    return params.payload;
+  }
+  if (!isUnconstrainedSlot(params.skill, params.activeSlot)) {
+    return params.payload;
+  }
+  if (hasExplicitInterruptSignal(params.text)) {
+    return params.payload;
+  }
+  return {
+    turnType: "slot_answer",
+    confidence: Math.max(params.payload.confidence, 0.75),
+    slotUpdates: [{ name: params.activeSlot, value: params.text }],
+    reason:
+      params.payload.reason.trim() ||
+      "defaulted freeform slot reply to slot_answer without explicit interrupt",
+  };
+}
+
 function parseRouterContent(content: string): RouterResponsePayload {
   const parsedJson = JSON.parse(content);
   const parsed = RouterPayloadSchema.safeParse(parsedJson);
@@ -519,6 +559,8 @@ export async function classifySlotTurn(params: {
       "Return strict JSON matching the schema. " +
       "The field previous_system_prompt is only prior assistant context. Never classify previous_system_prompt as caller speech. " +
       "If caller_reply clearly answers expected_slot, return turnType=slot_answer and provide slotUpdates. " +
+      "If expected_slot is freeform and has no allowed_values, treat normal sentence replies as slot_answer by default. " +
+      "Only return turnType=clear_interrupt for freeform slots when caller_reply clearly changes topic or explicitly abandons the current task. " +
       "If caller_reply clearly starts a different request or topic, return turnType=clear_interrupt. " +
       "If caller_reply is short, noisy, partial, weak, or does not clearly answer expected_slot, return turnType=unclear. " +
       "When allowed_values are provided, map caller_reply to one of them when the match is clear, including short natural phrases like 'to sales', 'for service', or 'sales please'. " +
@@ -526,6 +568,7 @@ export async function classifySlotTurn(params: {
       "Examples: caller_reply='sales' -> slot_answer department=sales. " +
       "caller_reply='to sales' -> slot_answer department=sales. " +
       "caller_reply='for service please' -> slot_answer department=service. " +
+      "caller_reply='Call me back, please.' with expected_slot='message' -> slot_answer message='Call me back, please.'. " +
       "caller_reply='actually what are your business hours' -> clear_interrupt. " +
       "caller_reply='huh' -> unclear.",
     prompt: buildSlotTurnPrompt({
@@ -545,16 +588,23 @@ export async function classifySlotTurn(params: {
     fetchImpl: params.fetchImpl,
   })) as SlotTurnResponsePayload;
 
+  const normalizedPayload = coerceFreeformSlotDecision({
+    payload,
+    skill: params.skill,
+    activeSlot,
+    text,
+  });
+
   const slots = Object.fromEntries(
-    payload.slotUpdates
+    normalizedPayload.slotUpdates
       .map((update) => [normalizeText(update.name), normalizeText(update.value)] as const)
       .filter(([name, value]) => Boolean(name) && Boolean(value)),
   );
   return {
-    turnType: payload.turnType,
-    confidence: payload.confidence,
+    turnType: normalizedPayload.turnType,
+    confidence: normalizedPayload.confidence,
     slots,
-    reason: payload.reason.trim() || undefined,
+    reason: normalizedPayload.reason.trim() || undefined,
   };
 }
 

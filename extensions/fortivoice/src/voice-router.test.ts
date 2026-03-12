@@ -6,12 +6,15 @@ const manifest: VoiceSkillManifest[] = [
   {
     skillName: "answer_faq",
     skillPath: "/tmp/answer-faq/SKILL.md",
+    skillInstructions: "# answer_faq",
     intentExamples: ["what are your hours", "where are you located"],
     requiredSlots: [],
     optionalSlots: [],
     toolRequired: false,
     missingSlotPrompts: {},
     slotConstraints: {},
+    allowedTools: [],
+    requiredTool: undefined,
     executionMode: "deterministic",
     escalationPolicy: "on_low_confidence",
     answerMode: "knowledge",
@@ -29,6 +32,7 @@ const manifest: VoiceSkillManifest[] = [
   {
     skillName: "weather",
     skillPath: "/tmp/weather/SKILL.md",
+    skillInstructions: "# weather",
     intentExamples: ["what is the weather today", "weather in ottawa"],
     requiredSlots: ["city"],
     optionalSlots: [],
@@ -36,6 +40,8 @@ const manifest: VoiceSkillManifest[] = [
     missingSlotPrompts: { city: "What city should I check?" },
     slotConstraints: {},
     waitPrompt: "One moment while I check that.",
+    allowedTools: ["read", "exec", "process"],
+    requiredTool: "exec",
     executionMode: "deterministic",
     escalationPolicy: "on_low_confidence",
     answerMode: "none",
@@ -89,6 +95,7 @@ describe("routeVoiceTurn", () => {
     const skill: VoiceSkillManifest = {
       skillName: "leave_message",
       skillPath: "/tmp/leave-message/SKILL.md",
+      skillInstructions: "# leave_message",
       intentExamples: ["can i leave a message", "i want to leave a message"],
       requiredSlots: ["department", "caller_name", "message", "contact"],
       optionalSlots: [],
@@ -101,6 +108,8 @@ describe("routeVoiceTurn", () => {
         },
       },
       waitPrompt: "One moment while I send that message.",
+      allowedTools: ["read", "exec", "process"],
+      requiredTool: "exec",
       executionMode: "agentic",
       escalationPolicy: "always",
       answerMode: "none",
@@ -136,6 +145,7 @@ describe("routeVoiceTurn", () => {
     const skill: VoiceSkillManifest = {
       skillName: "leave_message",
       skillPath: "/tmp/leave-message/SKILL.md",
+      skillInstructions: "# leave_message",
       intentExamples: ["can i leave a message", "i want to leave a message"],
       requiredSlots: ["department", "caller_name", "message", "contact"],
       optionalSlots: [],
@@ -148,6 +158,8 @@ describe("routeVoiceTurn", () => {
         },
       },
       waitPrompt: "One moment while I send that message.",
+      allowedTools: ["read", "exec", "process"],
+      requiredTool: "exec",
       executionMode: "agentic",
       escalationPolicy: "always",
       answerMode: "none",
@@ -179,10 +191,107 @@ describe("routeVoiceTurn", () => {
     expect(decision.slots).toEqual({});
   });
 
+  it("defaults freeform message slots to slot_answer unless there is a clear interrupt", async () => {
+    const skill: VoiceSkillManifest = {
+      skillName: "leave_message",
+      skillPath: "/tmp/leave-message/SKILL.md",
+      skillInstructions: "# leave_message",
+      intentExamples: ["can i leave a message", "i want to leave a message"],
+      requiredSlots: ["department", "caller_name", "message", "contact"],
+      optionalSlots: [],
+      toolRequired: true,
+      missingSlotPrompts: { message: "What message would you like me to pass along?" },
+      slotConstraints: {},
+      waitPrompt: "One moment while I send that message.",
+      allowedTools: ["read", "exec", "process"],
+      requiredTool: "exec",
+      executionMode: "agentic",
+      escalationPolicy: "always",
+      answerMode: "none",
+    };
+
+    const decision = await classifySlotTurn({
+      text: "Call me back, please.",
+      skill,
+      activeSlot: "message",
+      activeSlotPrompt: "What message would you like me to pass along?",
+      sessionState: {
+        pendingSkill: "leave_message",
+        lastSelectedSkill: "leave_message",
+        activeSlot: "message",
+        activeSlotPrompt: "What message would you like me to pass along?",
+        slotMode: "collecting",
+        pendingSlots: {
+          department: "sales",
+          caller_name: "John Smith",
+        },
+      },
+      apiKey: "test-key",
+      fetchImpl: mockFetchWithPayload({
+        turnType: "clear_interrupt",
+        confidence: 0.9,
+        slotUpdates: [],
+        reason: "Caller requested a different action (call back) instead of providing the message.",
+      }),
+    });
+
+    expect(decision.turnType).toBe("slot_answer");
+    expect(decision.slots.message).toBe("Call me back, please.");
+  });
+
+  it("keeps explicit interrupts as clear_interrupt for freeform slots", async () => {
+    const skill: VoiceSkillManifest = {
+      skillName: "leave_message",
+      skillPath: "/tmp/leave-message/SKILL.md",
+      skillInstructions: "# leave_message",
+      intentExamples: ["can i leave a message", "i want to leave a message"],
+      requiredSlots: ["department", "caller_name", "message", "contact"],
+      optionalSlots: [],
+      toolRequired: true,
+      missingSlotPrompts: { message: "What message would you like me to pass along?" },
+      slotConstraints: {},
+      waitPrompt: "One moment while I send that message.",
+      allowedTools: ["read", "exec", "process"],
+      requiredTool: "exec",
+      executionMode: "agentic",
+      escalationPolicy: "always",
+      answerMode: "none",
+    };
+
+    const decision = await classifySlotTurn({
+      text: "Actually, what are your business hours?",
+      skill,
+      activeSlot: "message",
+      activeSlotPrompt: "What message would you like me to pass along?",
+      sessionState: {
+        pendingSkill: "leave_message",
+        lastSelectedSkill: "leave_message",
+        activeSlot: "message",
+        activeSlotPrompt: "What message would you like me to pass along?",
+        slotMode: "collecting",
+        pendingSlots: {
+          department: "sales",
+          caller_name: "John Smith",
+        },
+      },
+      apiKey: "test-key",
+      fetchImpl: mockFetchWithPayload({
+        turnType: "clear_interrupt",
+        confidence: 0.95,
+        slotUpdates: [],
+        reason: "clear topic switch",
+      }),
+    });
+
+    expect(decision.turnType).toBe("clear_interrupt");
+    expect(decision.slots).toEqual({});
+  });
+
   it("sends an explicit slot-turn payload that distinguishes caller reply from prior prompt", async () => {
     const skill: VoiceSkillManifest = {
       skillName: "leave_message",
       skillPath: "/tmp/leave-message/SKILL.md",
+      skillInstructions: "# leave_message",
       intentExamples: ["can i leave a message", "i want to leave a message"],
       requiredSlots: ["department", "caller_name", "message", "contact"],
       optionalSlots: [],
@@ -195,6 +304,8 @@ describe("routeVoiceTurn", () => {
         },
       },
       waitPrompt: "One moment while I send that message.",
+      allowedTools: ["read", "exec", "process"],
+      requiredTool: "exec",
       executionMode: "agentic",
       escalationPolicy: "always",
       answerMode: "none",

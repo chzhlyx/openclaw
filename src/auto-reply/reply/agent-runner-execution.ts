@@ -35,6 +35,11 @@ import { stripHeartbeatToken } from "../heartbeat.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../tokens.js";
 import { buildThreadingToolContext, resolveEnforceFinalTag } from "./agent-runner-utils.js";
 import { createBlockReplyPayloadKey, type BlockReplyPipeline } from "./block-reply-pipeline.js";
+import {
+  guardExecutionLockedResult,
+  mergeExecutionLockSystemPrompt,
+  normalizeExecutionLockAllowedTools,
+} from "./execution-lock.js";
 import { parseReplyDirectives } from "./reply-directives.js";
 import { applyReplyTagsToPayload, isRenderablePayload } from "./reply-payloads.js";
 
@@ -143,6 +148,7 @@ export async function runAgentTurnWithFallback(params: {
       };
       const blockReplyPipeline = params.blockReplyPipeline;
       const onToolResult = params.opts?.onToolResult;
+      const executionLock = params.followupRun.run.executionLock;
       const fallbackResult = await runWithModelFallback({
         cfg: params.followupRun.run.config,
         provider: params.followupRun.run.provider,
@@ -188,7 +194,10 @@ export async function runAgentTurnWithFallback(params: {
                   thinkLevel: params.followupRun.run.thinkLevel,
                   timeoutMs: params.followupRun.run.timeoutMs,
                   runId,
-                  extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
+                  extraSystemPrompt: mergeExecutionLockSystemPrompt({
+                    extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
+                    executionLock,
+                  }),
                   ownerNumbers: params.followupRun.run.ownerNumbers,
                   cliSessionId,
                   images: params.opts?.images,
@@ -281,7 +290,12 @@ export async function runAgentTurnWithFallback(params: {
             config: params.followupRun.run.config,
             skillsSnapshot: params.followupRun.run.skillsSnapshot,
             prompt: params.commandBody,
-            extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
+            extraSystemPrompt: mergeExecutionLockSystemPrompt({
+              extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
+              executionLock,
+            }),
+            executionLock,
+            allowedTools: normalizeExecutionLockAllowedTools(executionLock),
             ownerNumbers: params.followupRun.run.ownerNumbers,
             enforceFinalTag: resolveEnforceFinalTag(params.followupRun.run, provider),
             provider,
@@ -464,7 +478,10 @@ export async function runAgentTurnWithFallback(params: {
           });
         },
       });
-      runResult = fallbackResult.result;
+      runResult = guardExecutionLockedResult({
+        executionLock,
+        result: fallbackResult.result,
+      });
       fallbackProvider = fallbackResult.provider;
       fallbackModel = fallbackResult.model;
 

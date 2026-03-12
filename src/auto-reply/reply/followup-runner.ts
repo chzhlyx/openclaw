@@ -16,6 +16,11 @@ import { defaultRuntime } from "../../runtime.js";
 import { stripHeartbeatToken } from "../heartbeat.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../tokens.js";
 import {
+  guardExecutionLockedResult,
+  mergeExecutionLockSystemPrompt,
+  normalizeExecutionLockAllowedTools,
+} from "./execution-lock.js";
+import {
   applyReplyThreading,
   filterMessagingToolDuplicates,
   shouldSuppressMessagingToolReplies,
@@ -124,6 +129,7 @@ export function createFollowupRunner(params: {
       let runResult: Awaited<ReturnType<typeof runEmbeddedPiAgent>>;
       let fallbackProvider = queued.run.provider;
       let fallbackModel = queued.run.model;
+      const executionLock = queued.run.executionLock;
       try {
         const fallbackResult = await runWithModelFallback({
           cfg: queued.run.config,
@@ -157,7 +163,12 @@ export function createFollowupRunner(params: {
               config: queued.run.config,
               skillsSnapshot: queued.run.skillsSnapshot,
               prompt: queued.prompt,
-              extraSystemPrompt: queued.run.extraSystemPrompt,
+              extraSystemPrompt: mergeExecutionLockSystemPrompt({
+                extraSystemPrompt: queued.run.extraSystemPrompt,
+                executionLock,
+              }),
+              executionLock,
+              allowedTools: normalizeExecutionLockAllowedTools(executionLock),
               ownerNumbers: queued.run.ownerNumbers,
               enforceFinalTag: queued.run.enforceFinalTag,
               provider,
@@ -185,7 +196,10 @@ export function createFollowupRunner(params: {
             });
           },
         });
-        runResult = fallbackResult.result;
+        runResult = guardExecutionLockedResult({
+          executionLock,
+          result: fallbackResult.result,
+        });
         fallbackProvider = fallbackResult.provider;
         fallbackModel = fallbackResult.model;
       } catch (err) {

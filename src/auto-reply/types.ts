@@ -13,6 +13,17 @@ export type ModelSelectedContext = {
   thinkLevel: string | undefined;
 };
 
+export type LockedSkillExecution = {
+  mode: "skill_locked";
+  skillName: string;
+  skillPath?: string;
+  skillInstructions?: string;
+  allowedTools?: string[];
+  requiredTool?: string;
+  waitPrompt?: string;
+  failureReplyText?: string;
+};
+
 export type GetReplyOptions = {
   /** Override run id for agent events (defaults to random UUID). */
   runId?: string;
@@ -39,6 +50,8 @@ export type GetReplyOptions = {
   blockReplyTimeoutMs?: number;
   /** If provided, only load these skills for this session (empty = no skills). */
   skillFilter?: string[];
+  /** Restrict this run to a single selected skill and a limited tool surface. */
+  executionLock?: LockedSkillExecution;
   /** Mutable ref to track if a reply was sent (for Slack "first" threading mode). */
   hasRepliedRef?: { value: boolean };
 };
