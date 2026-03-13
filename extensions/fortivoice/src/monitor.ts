@@ -381,9 +381,6 @@ export function shouldEmitWaitPrompt(params: {
   if (!skill?.toolRequired || !skill.waitPrompt) {
     return false;
   }
-  if (skill.executionMode === "agentic") {
-    return false;
-  }
   return decision.decision === "wait_and_execute";
 }
 
@@ -499,6 +496,8 @@ async function buildVoiceActions(params: {
       accountId: account.accountId,
       sessionId,
     });
+    const waitPromptAlreadySent =
+      handoffSnapshot.waitPromptSentForTurn === sessionState.activeTurnId;
     const fallbackActions = await buildAgentActions({
       request,
       account,
@@ -519,6 +518,8 @@ async function buildVoiceActions(params: {
       cfg,
       runtime,
       statusSink,
+      emitActionsEvent: params.emitActionsEvent,
+      waitPromptAlreadySent,
     });
 
     if (fallbackActions.length > 0) {
@@ -604,6 +605,7 @@ async function buildVoiceActions(params: {
         cfg,
         runtime,
         statusSink,
+        emitActionsEvent: params.emitActionsEvent,
       });
       if (agentActions.length > 0) {
         return agentActions;
@@ -839,6 +841,7 @@ async function buildVoiceActions(params: {
     cfg,
     runtime,
     statusSink,
+    emitActionsEvent: params.emitActionsEvent,
   });
 }
 
@@ -853,6 +856,8 @@ async function buildAgentActions(params: {
   cfg: OpenClawConfig;
   runtime: FortivoiceRuntimeEnv;
   statusSink?: (patch: Partial<ChannelAccountSnapshot>) => void;
+  emitActionsEvent?: (actions: FortivoiceAction[]) => Promise<void>;
+  waitPromptAlreadySent?: boolean;
 }): Promise<FortivoiceAction[]> {
   const {
     request,
@@ -865,6 +870,8 @@ async function buildAgentActions(params: {
     cfg,
     runtime,
     statusSink,
+    emitActionsEvent,
+    waitPromptAlreadySent,
   } = params;
   const core = getFortivoiceRuntime();
 
@@ -931,7 +938,7 @@ async function buildAgentActions(params: {
 
   const actions: FortivoiceAction[] = [];
   let actionIndex = 0;
-  let streamedWaitPromptSent = false;
+  let streamedWaitPromptSent = waitPromptAlreadySent === true;
   const lockedWaitPrompt = lockedExecution?.waitPrompt?.trim();
   const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
     cfg,
@@ -968,7 +975,7 @@ async function buildAgentActions(params: {
             text: lockedWaitPrompt,
           });
           if (waitActions.length > 0) {
-            await params.emitActionsEvent?.(waitActions);
+            await emitActionsEvent?.(waitActions);
             streamedWaitPromptSent = true;
           }
         }

@@ -146,7 +146,7 @@ describe("fortivoice monitor", () => {
     ).toBe(false);
   });
 
-  it("does not emit the wait prompt for agent-owned skills at handoff", () => {
+  it("emits the wait prompt for agent-owned skills at slow-path handoff", () => {
     expect(
       shouldEmitWaitPrompt({
         decision: {
@@ -178,7 +178,7 @@ describe("fortivoice monitor", () => {
           answerMode: "none",
         },
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("emits the wait prompt for deterministic tool execution when ready", () => {
