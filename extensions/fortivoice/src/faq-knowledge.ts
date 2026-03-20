@@ -68,6 +68,7 @@ function computeSimilarity(left: string, right: string): number {
 
 export function compileFaqKnowledgeFromMarkdown(markdown: string): FaqKnowledgeEntry[] {
   const sectionRegex = /^##\s+(FAQ-\d+)\s+—\s+(.+)$/gm;
+  const topLevelHeadingRegex = /^#\s+.+$/gm;
   const sections: Array<{ id: string; title: string; start: number; end: number }> = [];
   let match: RegExpExecArray | null;
   while ((match = sectionRegex.exec(markdown)) !== null) {
@@ -82,7 +83,16 @@ export function compileFaqKnowledgeFromMarkdown(markdown: string): FaqKnowledgeE
   const entries: FaqKnowledgeEntry[] = [];
   for (let i = 0; i < sections.length; i += 1) {
     const section = sections[i];
-    const nextStart = sections[i + 1]?.start ?? markdown.length;
+    let nextStart = sections[i + 1]?.start ?? markdown.length;
+    topLevelHeadingRegex.lastIndex = section.start;
+    const nextTopLevelHeading = topLevelHeadingRegex.exec(markdown);
+    if (
+      nextTopLevelHeading &&
+      nextTopLevelHeading.index > section.start &&
+      nextTopLevelHeading.index < nextStart
+    ) {
+      nextStart = nextTopLevelHeading.index;
+    }
     const block = markdown.slice(section.start, nextStart);
     const questionBlockMatch = /\*\*Question examples\*\*([\s\S]*?)\*\*Answer\*\*/.exec(block);
     const answerBlockMatch = /\*\*Answer\*\*([\s\S]*?)$/.exec(block);

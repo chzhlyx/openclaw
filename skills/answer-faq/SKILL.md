@@ -1,7 +1,7 @@
 ---
 name: answer_faq
 description: >
-  Handle receptionist FAQ using the approved FAQ list only: business hours/open/close time, holiday hours, office address/location, phone support availability, after-hours voicemail, email, website, parking, language support, company services, FortiVoice product line details, and current promotions. Use this for short factual info questions like "what are your hours?", "where are you located?", "what is in your FortiVoice product line?", or "do you have any promotion?", and do not use it for booking, call routing, incidents, account/payment data, or human-judgment requests.
+  Handle receptionist FAQ using the approved FAQ list only: business hours/open/close time, holiday hours, office address/location, phone support availability, after-hours voicemail, email, website, parking, language support, company services, FortiVoice product line details, current promotions, and assistant capability questions. Use this for short factual info questions like "what are your hours?", "where are you located?", "what is in your FortiVoice product line?", "what can you do?", or "do you have any promotion?", and do not use it for booking, call routing, incidents, account/payment data, or human-judgment requests.
 metadata:
   {
     "openclaw":
@@ -15,6 +15,7 @@ metadata:
                 "what are your business hours",
                 "do you offer phone support",
                 "what is included in the fortivoice product line",
+                "what can you do",
               ],
             "requiredSlots": [],
             "optionalSlots": [],
@@ -30,7 +31,7 @@ when_to_use: >
   Use this skill when the caller asks a general informational question
   that can be answered from a fixed FAQ list and does NOT require
   call routing, booking, account access, or human judgment, including
-  product line overview and current promotion questions.
+  product line overview, assistant capability questions, and current promotion questions.
 
 do_not_use_when: >
   - Caller asks to speak to a person or department
@@ -48,22 +49,6 @@ inputs:
       description: The caller's question in natural language
   required:
     - question
-
-outputs:
-  type: object
-  properties:
-    answer:
-      type: string
-      description: The spoken answer to the caller
-    confidence:
-      type: number
-      description: Confidence score between 0 and 1
-    source:
-      type: string
-      description: FAQ identifier used
-    suggested_next_skill:
-      type: string
-      description: Optional next step if escalation is required
 ---
 
 # Approved FAQ Knowledge Base
@@ -244,22 +229,30 @@ The sales department email address is **yucao@fortinet.com**.
 
 ---
 
+## FAQ-014 — Assistant Capabilities
+
+**Question examples**
+
+- What can you do?
+- What can this assistant do?
+- How can you help me?
+- What can this FortiVoice assistant do?
+
+**Answer**
+I can answer common questions and take a message for Sales or Service.
+
+---
+
 # Response Rules
 
 - Answer **only** using the FAQs above
 - Do **not** invent or assume information
 - If the question does not clearly match an FAQ:
   - Respond politely that further assistance is required
-  - Set `suggested_next_skill` to `route_call` or `handoff_to_human`
 - Keep responses short and suitable for spoken audio
+- Speak only the natural-language answer that the caller should hear
+- Do **not** speak confidence scores, FAQ identifiers, file paths, source metadata, or structured fields
 
-# Example Output
+# Example Spoken Reply
 
-```json
-{
-  "answer": "Our regular business hours are Monday to Friday, 9:00 a.m. to 5:00 p.m. Eastern Time, excluding public holidays.",
-  "confidence": 0.95,
-  "source": "FAQ-002",
-  "suggested_next_skill": ""
-}
-```
+Our regular business hours are Monday to Friday, 9:00 a.m. to 5:00 p.m. Eastern Time, excluding public holidays.

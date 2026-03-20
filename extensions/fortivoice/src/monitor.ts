@@ -41,6 +41,7 @@ import {
   endVoiceSession,
   getVoiceSessionSnapshot,
   mergeVoiceSessionSlots,
+  resetVoiceSessionForInterrupt,
   startVoiceTurn,
   updateVoiceSessionState,
 } from "./voice-session-state.js";
@@ -57,7 +58,6 @@ const FORTIVOICE_ACTION_GUIDANCE =
   "Supported action types: speak, end.\n" +
   "When more caller input is required, ask follow-up questions using speak-only.";
 const FORTIVOICE_ACTION_GUIDANCE_ENABLED = false;
-const FORTIVOICE_COLLECT_ENABLED = false;
 const FORTIVOICE_ROUTER_PROVIDER = process.env.FORTIVOICE_ROUTER_PROVIDER?.trim() || "openai";
 const FORTIVOICE_ROUTER_MODEL = process.env.FORTIVOICE_ROUTER_MODEL?.trim() || "gpt-4o-mini";
 const FORTIVOICE_ROUTER_BASE_URL = process.env.FORTIVOICE_ROUTER_BASE_URL?.trim() || undefined;
@@ -185,53 +185,6 @@ function buildFortivoiceAgentInput(text: string): string {
   return FORTIVOICE_ACTION_GUIDANCE_ENABLED ? `${text}\n\n${FORTIVOICE_ACTION_GUIDANCE}` : text;
 }
 
-function buildSpeakFallbackForCollectAction(
-  action: Extract<FortivoiceAction, { type: "collect" }>,
-): string {
-  const keys = action.schema.fields
-    .map((field) => field.key.trim())
-    .filter(Boolean)
-    .slice(0, 5);
-  if (keys.length === 0) {
-    return "Could you share the required details?";
-  }
-  if (keys.length === 1) {
-    return `Could you share your ${keys[0]}?`;
-  }
-  return `Could you share these details: ${keys.join(", ")}?`;
-}
-
-export function inferFortivoiceCollectActionFromPlainReply(params: {
-  latestUserText: string;
-  assistantText: string;
-}): Extract<FortivoiceAction, { type: "collect" }> | null {
-  const userText = params.latestUserText.trim().toLowerCase();
-  const assistantText = params.assistantText.trim();
-  if (!userText || !assistantText) {
-    return null;
-  }
-  if (!/\bweather\b/.test(userText)) {
-    return null;
-  }
-
-  const assistantLower = assistantText.toLowerCase();
-  const asksForCity =
-    /\bcity\b/.test(assistantLower) &&
-    (assistantText.includes("?") ||
-      /\b(which|what)\s+city\b/.test(assistantLower) ||
-      /\bcould you tell me\b/.test(assistantLower));
-  if (!asksForCity) {
-    return null;
-  }
-
-  return {
-    type: "collect",
-    schema: {
-      fields: [{ key: "city", type: "string", required: true }],
-    },
-  };
-}
-
 function resolveVoiceSkillAllowlist(account: ResolvedFortivoiceAccount): string[] | undefined {
   const configList = account.config.voiceSkillAllowlist
     ?.map((entry) => entry.trim())
@@ -282,6 +235,17 @@ function buildLockedExecutionSpec(skill: VoiceSkillManifest): LockedSkillExecuti
     waitPrompt: skill.waitPrompt,
     failureReplyText: skill.failurePrompt,
   };
+}
+
+function resolveFortivoiceAgentSessionKey(params: {
+  sessionId: string;
+  lockedExecution?: LockedSkillExecution;
+  genericBranch?: number;
+}): string {
+  if (params.lockedExecution) {
+    return `fortivoice:${params.sessionId}:skill:${params.lockedExecution.skillName}`;
+  }
+  return `fortivoice:${params.sessionId}:generic:${params.genericBranch ?? 0}`;
 }
 
 function resolveVoicePrompt(skill: VoiceSkillManifest, slotName: string): string {
@@ -468,7 +432,7 @@ async function buildVoiceActions(params: {
 }): Promise<FortivoiceAction[]> {
   const { request, account, sessionId, text, cfg, runtime, logger, voiceManifest, statusSink } =
     params;
-  const sessionState = startVoiceTurn({
+  let sessionState = startVoiceTurn({
     accountId: account.accountId,
     sessionId,
   });
@@ -519,6 +483,7 @@ async function buildVoiceActions(params: {
       runtime,
       statusSink,
       emitActionsEvent: params.emitActionsEvent,
+      genericBranch: sessionState.genericBranch,
       waitPromptAlreadySent,
     });
 
@@ -580,7 +545,7 @@ async function buildVoiceActions(params: {
   const agentOwnedSkill = findManifestSkill(voiceManifest, sessionState.agentOwnedSkill);
   if (agentOwnedSkill && !pendingSkill && sessionState.slotMode !== "collecting") {
     if (looksLikeAgentSkillInterrupt(text)) {
-      clearVoiceSessionPendingState({
+      sessionState = resetVoiceSessionForInterrupt({
         accountId: account.accountId,
         sessionId,
       });
@@ -606,6 +571,7 @@ async function buildVoiceActions(params: {
         runtime,
         statusSink,
         emitActionsEvent: params.emitActionsEvent,
+        genericBranch: sessionState.genericBranch,
       });
       if (agentActions.length > 0) {
         return agentActions;
@@ -717,7 +683,7 @@ async function buildVoiceActions(params: {
       });
     }
 
-    clearVoiceSessionPendingState({
+    sessionState = resetVoiceSessionForInterrupt({
       accountId: account.accountId,
       sessionId,
     });
@@ -842,6 +808,7 @@ async function buildVoiceActions(params: {
     runtime,
     statusSink,
     emitActionsEvent: params.emitActionsEvent,
+    genericBranch: sessionState.genericBranch,
   });
 }
 
@@ -858,6 +825,7 @@ async function buildAgentActions(params: {
   statusSink?: (patch: Partial<ChannelAccountSnapshot>) => void;
   emitActionsEvent?: (actions: FortivoiceAction[]) => Promise<void>;
   waitPromptAlreadySent?: boolean;
+  genericBranch?: number;
 }): Promise<FortivoiceAction[]> {
   const {
     request,
@@ -872,6 +840,7 @@ async function buildAgentActions(params: {
     statusSink,
     emitActionsEvent,
     waitPromptAlreadySent,
+    genericBranch,
   } = params;
   const core = getFortivoiceRuntime();
 
@@ -884,6 +853,11 @@ async function buildAgentActions(params: {
       id: `session:${sessionId}`,
     },
   });
+  const agentSessionKey = resolveFortivoiceAgentSessionKey({
+    sessionId,
+    lockedExecution,
+    genericBranch,
+  });
 
   const storePath = core.channel.session.resolveStorePath(cfg.session?.store, {
     agentId: route.agentId,
@@ -895,7 +869,7 @@ async function buildAgentActions(params: {
     timestamp: Date.now(),
     previousTimestamp: core.channel.session.readSessionUpdatedAt({
       storePath,
-      sessionKey: route.sessionKey,
+      sessionKey: agentSessionKey,
     }),
     envelope: core.channel.reply.resolveEnvelopeFormatOptions(cfg),
     body: buildFortivoiceAgentInput(agentInputText ?? text),
@@ -907,7 +881,7 @@ async function buildAgentActions(params: {
     CommandBody: text,
     From: `fortivoice:session:${sessionId}`,
     To: `fortivoice:session:${sessionId}`,
-    SessionKey: route.sessionKey,
+    SessionKey: agentSessionKey,
     AccountId: route.accountId,
     ChatType: "direct",
     ConversationLabel: `session:${sessionId}`,
@@ -921,7 +895,7 @@ async function buildAgentActions(params: {
 
   await core.channel.session.recordInboundSession({
     storePath,
-    sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
+    sessionKey: ctxPayload.SessionKey ?? agentSessionKey,
     ctx: ctxPayload,
     onRecordError: (err) => runtime.error?.(`fortivoice: session record failed: ${String(err)}`),
   });
@@ -987,24 +961,9 @@ async function buildAgentActions(params: {
         }
         const structuredActions = parseFortivoiceActionsFromAssistantText(combined);
         if (structuredActions) {
-          const outgoingStructured = FORTIVOICE_COLLECT_ENABLED
-            ? structuredActions
-            : structuredActions.filter((action) => action.type !== "collect");
-          if (outgoingStructured.length === 0) {
-            const collectAction = structuredActions.find(
-              (action): action is Extract<FortivoiceAction, { type: "collect" }> =>
-                action.type === "collect",
-            );
-            if (collectAction) {
-              actionIndex += 1;
-              outgoingStructured.push(
-                createSpeakAction({
-                  text: buildSpeakFallbackForCollectAction(collectAction),
-                  messageId: `${request.req_id}-${actionIndex}`,
-                }),
-              );
-            }
-          }
+          const outgoingStructured = structuredActions.filter(
+            (action) => action.type !== "collect",
+          );
 
           actions.push(...outgoingStructured);
           if (outgoingStructured.length > 0) {
@@ -1016,29 +975,6 @@ async function buildAgentActions(params: {
             statusSink?.({ lastOutboundAt: Date.now() });
           }
           return;
-        }
-        if (FORTIVOICE_COLLECT_ENABLED) {
-          const collectAction = inferFortivoiceCollectActionFromPlainReply({
-            latestUserText: text,
-            assistantText: combined,
-          });
-          if (collectAction) {
-            actionIndex += 1;
-            actions.push(
-              createSpeakAction({
-                text: combined,
-                messageId: `${request.req_id}-${actionIndex}`,
-              }),
-              collectAction,
-            );
-            core.channel.activity.record({
-              channel: "fortivoice",
-              accountId: account.accountId,
-              direction: "outbound",
-            });
-            statusSink?.({ lastOutboundAt: Date.now() });
-            return;
-          }
         }
         const chunks = core.channel.text.chunkTextWithMode(combined, textLimit, chunkMode);
         for (const chunk of chunks.length > 0 ? chunks : [combined]) {

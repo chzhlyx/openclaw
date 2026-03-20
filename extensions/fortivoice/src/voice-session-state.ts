@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 export type VoiceSessionSnapshot = {
   activeTurnId?: string;
+  genericBranch?: number;
   pendingSkill?: string;
   agentOwnedSkill?: string;
   lastSelectedSkill?: string;
@@ -25,6 +26,7 @@ function getSessionKey(accountId: string, sessionId: string): string {
 function cloneSnapshot(state?: VoiceSessionState): VoiceSessionSnapshot {
   return {
     activeTurnId: state?.activeTurnId,
+    genericBranch: state?.genericBranch ?? 0,
     pendingSkill: state?.pendingSkill,
     agentOwnedSkill: state?.agentOwnedSkill,
     lastSelectedSkill: state?.lastSelectedSkill,
@@ -51,6 +53,7 @@ export function startVoiceTurn(params: {
   const existing = voiceSessionStates.get(key);
   const next: VoiceSessionState = {
     activeTurnId: randomUUID(),
+    genericBranch: existing?.genericBranch ?? 0,
     pendingSkill: existing?.pendingSkill,
     agentOwnedSkill: existing?.agentOwnedSkill,
     lastSelectedSkill: existing?.lastSelectedSkill,
@@ -78,6 +81,7 @@ export function updateVoiceSessionState(
     Object.prototype.hasOwnProperty.call(patch, field);
   const next: VoiceSessionState = {
     activeTurnId: has("activeTurnId") ? patch.activeTurnId : existing?.activeTurnId,
+    genericBranch: has("genericBranch") ? patch.genericBranch : (existing?.genericBranch ?? 0),
     pendingSkill: has("pendingSkill") ? patch.pendingSkill : existing?.pendingSkill,
     agentOwnedSkill: has("agentOwnedSkill") ? patch.agentOwnedSkill : existing?.agentOwnedSkill,
     lastSelectedSkill: has("lastSelectedSkill")
@@ -125,6 +129,24 @@ export function clearVoiceSessionPendingState(params: {
   return updateVoiceSessionState(params, {
     pendingSkill: undefined,
     agentOwnedSkill: undefined,
+    activeSlot: undefined,
+    activeSlotPrompt: undefined,
+    slotMode: "idle",
+    pendingSlots: {},
+    waitPromptSentForTurn: undefined,
+  });
+}
+
+export function resetVoiceSessionForInterrupt(params: {
+  accountId: string;
+  sessionId: string;
+}): VoiceSessionSnapshot {
+  const existing = getVoiceSessionSnapshot(params);
+  return updateVoiceSessionState(params, {
+    genericBranch: (existing.genericBranch ?? 0) + 1,
+    pendingSkill: undefined,
+    agentOwnedSkill: undefined,
+    lastSelectedSkill: undefined,
     activeSlot: undefined,
     activeSlotPrompt: undefined,
     slotMode: "idle",
