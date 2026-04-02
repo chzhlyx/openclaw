@@ -1,0 +1,119 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.2.6-3",
+    "lastTouchedAt": "2026-03-03T17:13:31.320Z"
+  },
+  "wizard": {
+    "lastRunAt": "2026-03-03T17:13:31.309Z",
+    "lastRunVersion": "2026.2.6-3",
+    "lastRunCommand": "onboard",
+    "lastRunMode": "local"
+  },
+  "tools": {
+    "exec": {
+      "security": "full",
+      "host": "gateway"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "verboseDefault": "off",
+      "model": {
+        "primary": "openai/gpt-5-mini"
+      },
+      "models": {
+        "openai/gpt-4.1-mini": {
+          "alias": "openai-fast"
+        }
+      },
+      "workspace": "/home/node/.openclaw/workspace",
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "maxConcurrent": 4,
+      "subagents": {
+        "maxConcurrent": 8
+      }
+    }
+  },
+  "messages": {
+    "ackReactionScope": "group-mentions"
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto"
+  },
+  "channels": {
+    "whatsapp": {
+      "accounts": {
+        "default": {
+          "enabled": false,
+          "dmPolicy": "pairing",
+          "groupPolicy": "allowlist",
+          "debounceMs": 0
+        }
+      },
+      "dmPolicy": "allowlist",
+      "selfChatMode": true,
+      "allowFrom": ["+16136186187"],
+      "groupPolicy": "allowlist",
+      "mediaMaxMb": 50,
+      "debounceMs": 0
+    },
+    "fortivoice": {
+      "enabled": true,
+      "phone": "2000",
+      "url": "ws://127.0.0.1:3002",
+      "routerProvider": "groq",
+      "routerModel": "openai/gpt-oss-20b"
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "auto",
+    "auth": {
+      "mode": "token",
+      "token": "oc_9afd2ae4b6912d8f1df566215f9fcc05075aab21458ccb55098e26ec062fa3e2"
+    },
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    }
+  },
+  "skills": {
+    "install": {
+      "nodeManager": "pnpm"
+    },
+    "entries": {
+      "coding-agent": {
+        "enabled": false
+      },
+      "healthcheck": {
+        "enabled": false
+      },
+      "openai-image-gen": {
+        "enabled": false
+      },
+      "openai-whisper-api": {
+        "enabled": false
+      },
+      "skill-creator": {
+        "enabled": false
+      },
+      "book-appointment": {
+        "enabled": false
+      }
+    }
+  },
+  "plugins": {
+    "entries": {
+      "fortivoice": {
+        "enabled": true
+      },
+      "whatsapp": {
+        "enabled": false
+      }
+    }
+  }
+}
